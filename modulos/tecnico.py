@@ -344,24 +344,26 @@ def semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen=N
     else:
         n_acuerdo = 0
 
-    # Tres niveles de intensidad por lado, según cuán alineados están los factores.
+    # Tres niveles de intensidad por lado, framado como acción (comprar/vender/esperar).
     if net >= 3:
-        color, titulo = "verde", f"COMPRA fuerte ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "verde", "COMPRAR", "señal fuerte"
     elif net == 2:
-        color, titulo = "verde", f"Compra moderada ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "verde", "COMPRAR", "señal moderada"
     elif net == 1:
-        color, titulo = "verde", f"Compra leve ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "verde", "Comprar", "señal leve"
     elif net <= -3:
-        color, titulo = "rojo", f"VENTA fuerte ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "rojo", "VENDER", "señal fuerte"
     elif net == -2:
-        color, titulo = "rojo", f"Venta moderada ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "rojo", "VENDER", "señal moderada"
     elif net == -1:
-        color, titulo = "rojo", f"Venta leve ({n_acuerdo}/4 factores)"
+        color, accion, nivel = "rojo", "Vender", "señal leve"
     else:
         # net == 0: distinguir "todo plano" de "señales que se cancelan"
         hay_opuestos = any(s > 0 for s in signos) and any(s < 0 for s in signos)
-        color = "amarillo"
-        titulo = "Señales mixtas, sin sesgo claro" if hay_opuestos else "Sin señal técnica clara"
+        color, accion = "amarillo", "ESPERAR"
+        nivel = "señales mixtas" if hay_opuestos else "sin señal clara"
+
+    titulo = f"{accion} — {nivel}"
 
     # El volumen no vota (no cambia el color): solo agrega/quita confianza cuando
     # YA hay una señal. Con señal + volumen alto, confirma; con volumen flojo, avisa.
@@ -374,6 +376,8 @@ def semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen=N
     return {
         "color": color,
         "titulo": titulo,
+        "accion": accion,
+        "nivel": nivel,
         "net": net,
         "n_acuerdo": n_acuerdo,
         "factores": {

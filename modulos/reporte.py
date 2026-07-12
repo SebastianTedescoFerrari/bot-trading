@@ -1,24 +1,16 @@
 """
 reporte.py — Arma el mensaje de Telegram para un activo.
 
-Enfoque TÉCNICO-FIRST (pedido de Sebastián): el técnico manda y la valuación
-queda como contexto mínimo indispensable para operar. Formato compacto y visual,
-con un bloque de "Niveles para operar" en monoespaciado (alineado como tabla).
-Mantiene todo explicado en criollo, pero corto.
+Enfoque técnico-first pero EXPLICADO: además de los datos, incluye una "Lectura"
+en palabras que interpreta la situación (comprar / vender / esperar), y cada
+factor se acompaña de su explicación en criollo. Valuación y técnico van
+separados. Formato con secciones claras y un bloque de niveles como tabla.
 """
 
 from modulos.tecnico import analisis_tecnico_completo
 from modulos.valuacion import evaluar_valuacion
 
 EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
-
-_RSI_CORTO = {
-    "sobreventa": "sobrevendido",
-    "acercandose_sobreventa": "cerca de sobreventa",
-    "neutral": "zona neutral",
-    "acercandose_sobrecompra": "cerca de sobrecompra",
-    "sobrecompra": "sobrecomprado",
-}
 
 
 def _voto_emoji(signo):
@@ -30,45 +22,83 @@ def _voto_emoji(signo):
     return "⚪"
 
 
-def _rsi_corto(rsi_ctx):
-    return f"RSI {rsi_ctx['valor']} · {_RSI_CORTO[rsi_ctx['estado']]}"
-
-
 def _pct(x):
-    """Formatea un % con signo, o 's/d' si falta el dato."""
     return f"{x:+.1f}%" if x is not None else "s/d"
 
 
-def _valuacion_corta(val):
-    """Valuación mínima para operar: target de analistas + un tag barata/cara."""
-    partes = []
-    c = val.get("consenso")
-    if c:
-        partes.append(f"🎯 Analistas ${c['target']} ({c['upside_pct']:+.0f}%)")
+# ─────────────────────────────────────────────────────────────
+# Lectura en palabras: interpreta el conjunto de factores.
+# ─────────────────────────────────────────────────────────────
+def _lectura(tec, sem):
+    net = sem["net"]
+    fac = sem["factores"]
+    signos = [fac[k]["signo"] for k in ("rsi", "medias", "fibonacci", "divergencia")]
+    fib = tec["fibonacci"]
+    P = []
 
-    color = val.get("color")
-    if "desvio_pct" in val:  # FMP disponible: comparación contra su P/E histórico
-        esc = val.get("escalon", 0)
-        if color == "verde":
-            partes.append(f"🟢 barata (~{esc}% bajo su P/E)")
-        elif color == "rojo":
-            partes.append(f"🔴 cara (~{esc}% sobre su P/E)")
+    # 1) Veredicto general
+    if net >= 3:
+        P.append("Casi todos los factores están alineados al alza: es la señal de compra más clara que da el bot.")
+    elif net == 2:
+        P.append("Hay un sesgo de compra moderado: dos de los cuatro factores apuntan al alza.")
+    elif net == 1:
+        P.append("Aparece una compra leve, sostenida por un solo factor. Es apenas un empujoncito: mejor esperar más confirmación antes de entrar.")
+    elif net == 0:
+        if any(s > 0 for s in signos) and any(s < 0 for s in signos):
+            P.append("Los factores se contradicen entre sí, sin un ganador claro. Momento de esperar y dejar que el gráfico defina.")
         else:
-            partes.append("🟡 en su P/E normal")
-    elif val.get("peg"):  # sin FMP, uso el PEG como referencia rápida
-        peg = val["peg"]
-        if peg < 1:
-            partes.append(f"🟢 barata (PEG {peg})")
-        elif peg <= 2:
-            partes.append(f"🟡 en precio (PEG {peg})")
-        else:
-            partes.append(f"🔴 cara (PEG {peg})")
+            P.append("No hay señales técnicas de peso en ninguna dirección. Momento de esperar.")
+    elif net == -1:
+        P.append("Aparece una venta leve, de un solo factor. Es una señal débil: mejor esperar confirmación antes de actuar.")
+    elif net == -2:
+        P.append("Hay un sesgo de venta moderado: dos de los cuatro factores apuntan a la baja.")
+    else:
+        P.append("Casi todos los factores apuntan a la baja: es la señal de venta más clara que da el bot.")
 
-    return " · ".join(partes) if partes else "sin datos suficientes de valuación"
+    # 2) Tendencia (medias)
+    if fac["medias"]["signo"] > 0:
+        P.append("El precio está por encima de sus tres medias, lo que marca una tendencia alcista de fondo.")
+    elif fac["medias"]["signo"] < 0:
+        P.append("El precio está por debajo de sus tres medias, lo que marca una tendencia bajista de fondo.")
+    else:
+        P.append("El precio está mezclado entre sus medias, sin una tendencia de fondo definida.")
+
+    # 3) Fibonacci (solo si está pegado a un nivel)
+    if fac["fibonacci"]["signo"] > 0:
+        P.append(f"Además está apoyado en un soporte de Fibonacci (${fib['soporte']}), zona donde suele rebotar.")
+    elif fac["fibonacci"]["signo"] < 0:
+        P.append(f"Además está chocando una resistencia de Fibonacci (${fib['resistencia']}), zona donde suele frenarse.")
+
+    # 4) RSI (solo si no es neutral)
+    est = tec["rsi"]["estado"]
+    if est in ("sobreventa", "acercandose_sobreventa"):
+        P.append("El RSI está bajo, algo que suele anticipar rebotes (aunque puede seguir cayendo).")
+    elif est in ("sobrecompra", "acercandose_sobrecompra"):
+        P.append("El RSI está alto, algo que suele anticipar una pausa o corrección.")
+
+    # 5) Divergencias
+    if tec["divergencias"]["alcista"]:
+        P.append("Hay una posible divergencia alcista (a confirmar mirando el gráfico).")
+    elif tec["divergencias"]["bajista"]:
+        P.append("Hay una posible divergencia bajista (a confirmar mirando el gráfico).")
+
+    # 6) Volumen
+    if tec["volumen"]["estado"] == "alto":
+        P.append("El volumen está por encima de lo normal, lo que le da fuerza a la señal.")
+    elif tec["volumen"]["estado"] == "bajo":
+        P.append("El volumen está flojo, así que conviene tomar la señal con cautela (puede ser un amague).")
+
+    # 7) Cierre con riesgo/beneficio si es relevante
+    rb = tec["riesgo_beneficio"]
+    if rb["estado"] == "favorable":
+        P.append(f"Encima, la relación riesgo/beneficio hasta los niveles cercanos juega a favor: podés ganar más de lo que arriesgás.")
+    elif rb["estado"] == "ajustado":
+        P.append("Ojo que la relación riesgo/beneficio hasta los niveles cercanos es ajustada: el premio no compensa tanto el riesgo.")
+
+    return " ".join(P)
 
 
 def _bloque_niveles(tec):
-    """Tabla monoespaciada con los niveles clave para operar."""
     fib, ath, precio = tec["fibonacci"], tec["ath"], tec["precio"]
     filas = [
         f"{'Resistencia':<12}${fib['resistencia']:<10}{fib['resistencia_nombre']}",
@@ -79,11 +109,63 @@ def _bloque_niveles(tec):
     return "```\n" + "\n".join(filas) + "\n```"
 
 
+def _riesgo_beneficio_texto(tec):
+    rb = tec["riesgo_beneficio"]
+    if rb["estado"] == "favorable":
+        ratio = rb["gana_pct"] / rb["arriesga_pct"]
+        return (f"Podés ganar +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) "
+                f"arriesgando solo −{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). "
+                f"Relación 1:{ratio:.1f} — favorable ✅")
+    if rb["estado"] == "ajustado":
+        ratio = rb["gana_pct"] / rb["arriesga_pct"]
+        return (f"Ganás +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) pero arriesgás "
+                f"−{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). Relación 1:{ratio:.1f} — ajustada.")
+    if rb["estado"] == "en_soporte":
+        return f"Está pegado al soporte (${rb['soporte']}): poco para arriesgar abajo, ojo a un posible rebote."
+    return f"Está pegado a la resistencia (${rb['resistencia']}): poco recorrido arriba si no la rompe."
+
+
+def _momentum_texto(tec):
+    v = tec["variacion"]
+    base = f"En el día {_pct(v['1d'])}, en la semana {_pct(v['1sem'])} y en el mes {_pct(v['1mes'])}."
+    vals = [x for x in (v["1d"], v["1sem"], v["1mes"]) if x is not None]
+    if vals and all(x > 0 for x in vals):
+        base += " Viene con envión alcista."
+    elif vals and all(x < 0 for x in vals):
+        base += " Viene golpeada en todos los plazos."
+    return base
+
+
+def _valuacion_texto(val):
+    P = []
+    c = val.get("consenso")
+    if c:
+        P.append(f"Los analistas ven un objetivo de ${c['target']} ({c['upside_pct']:+.0f}% desde hoy, {c['n_analistas']} analistas).")
+    if "desvio_pct" in val:  # FMP disponible
+        esc = val.get("escalon", 0)
+        if val["color"] == "verde":
+            P.append(f"Está barata: cotiza ~{esc}% por debajo de su P/E histórico.")
+        elif val["color"] == "rojo":
+            P.append(f"Está cara: cotiza ~{esc}% por encima de su P/E histórico.")
+        else:
+            P.append("Está en su precio normal frente a su P/E histórico.")
+    elif val.get("peg"):
+        peg = val["peg"]
+        if peg < 1:
+            P.append(f"Ajustada por su crecimiento parece barata (PEG {peg}, abajo de 1 es buena señal).")
+        elif peg <= 2:
+            P.append(f"Ajustada por su crecimiento está en un precio razonable (PEG {peg}).")
+        else:
+            P.append(f"Incluso por su crecimiento se paga cara (PEG {peg}, arriba de 2 es señal de caro).")
+    return " ".join(P) if P else "Sin datos suficientes de valuación."
+
+
 def armar_reporte(ticker, timeframe=None):
-    """Genera el texto completo del reporte para Telegram (técnico-first)."""
+    """Genera el reporte completo para Telegram: técnico explicado + valuación."""
     tec = analisis_tecnico_completo(ticker, timeframe)
     sem = tec["semaforo"]
     fac = sem["factores"]
+    fib = tec["fibonacci"]
 
     L = []
     # ── Encabezado ──
@@ -91,44 +173,53 @@ def armar_reporte(ticker, timeframe=None):
     L.append(f"_{tec['timeframe_nombre']}_")
     L.append("")
 
-    # ── Señal (titular + fila visual de los 4 factores) ──
-    L.append(f"{EMOJI[sem['color']]} *{sem['titulo']}*")
-    fila = " ".join(_voto_emoji(fac[k]["signo"]) for k in ("rsi", "medias", "fibonacci", "divergencia"))
-    L.append(fila)
+    # ── Señal (acción + nivel + fila visual de los 4 factores) ──
+    L.append(f"{EMOJI[sem['color']]} *{sem['titulo']}*  ·  {sem['n_acuerdo']}/4 factores")
+    L.append(" ".join(_voto_emoji(fac[k]["signo"]) for k in ("rsi", "medias", "fibonacci", "divergencia")))
     L.append("")
 
-    # ── Lectura técnica (cada factor con su voto) ──
-    L.append("*Lectura técnica*")
-    L.append(f"{_voto_emoji(fac['rsi']['signo'])} {_rsi_corto(tec['rsi'])}")
-    L.append(f"{_voto_emoji(fac['medias']['signo'])} {fac['medias']['texto']}")
-    L.append(f"{_voto_emoji(fac['fibonacci']['signo'])} {fac['fibonacci']['texto']}")
-    L.append(f"{_voto_emoji(fac['divergencia']['signo'])} {fac['divergencia']['texto'].capitalize()}")
+    # ── Lectura en palabras ──
+    L.append("📝 *Lectura*")
+    L.append(_lectura(tec, sem))
+    L.append("")
+
+    # ── Factores técnicos (cada uno con su explicación) ──
+    L.append("📊 *Factores técnicos*")
+    L.append(f"{_voto_emoji(fac['rsi']['signo'])} {tec['rsi']['texto']}")
+    L.append(f"{_voto_emoji(fac['medias']['signo'])} {tec['medias']['texto']}")
+    if fac["fibonacci"]["signo"] > 0:
+        L.append(f"🟢 Fibonacci — pegado al soporte {fib['soporte_nombre']} (${fib['soporte']}); si aguanta, zona de posible rebote.")
+    elif fac["fibonacci"]["signo"] < 0:
+        L.append(f"🔴 Fibonacci — pegado a la resistencia {fib['resistencia_nombre']} (${fib['resistencia']}); zona donde suele frenarse.")
+    else:
+        L.append(f"⚪ Fibonacci — entre el soporte {fib['soporte_nombre']} (${fib['soporte']}) y la resistencia {fib['resistencia_nombre']} (${fib['resistencia']}), sin pegar a ninguno.")
+    L.append(f"{_voto_emoji(fac['divergencia']['signo'])} {tec['divergencias']['texto']}")
     L.append(f"{tec['volumen']['texto']}")
     if tec["cruce"]["texto"]:
         L.append(tec["cruce"]["texto"])
     L.append("")
 
-    # ── Niveles para operar (tabla) + Riesgo/Beneficio ──
-    L.append("*Niveles para operar*")
+    # ── Niveles para operar + Riesgo/Beneficio ──
+    L.append("🎯 *Niveles para operar*")
     L.append(_bloque_niveles(tec))
-    L.append(f"⚖️ {tec['riesgo_beneficio']['texto']}")
+    L.append(f"⚖️ *Riesgo/Beneficio:* {_riesgo_beneficio_texto(tec)}")
     L.append("")
 
     # ── Momentum + Volatilidad ──
-    v = tec["variacion"]
-    L.append(f"📈 *Momentum* · 1d {_pct(v['1d'])} · 1sem {_pct(v['1sem'])} · 1mes {_pct(v['1mes'])}")
+    L.append(f"📈 *Momentum:* {_momentum_texto(tec)}")
     a = tec["atr"]
-    L.append(f"📏 *Volatilidad* · rango ~${a['atr']} ({a['pct']}%) por vela — referencia para el stop")
+    L.append(f"📏 *Volatilidad:* se mueve ~${a['atr']} ({a['pct']}%) por vela en promedio; "
+             f"poné el stop más allá de esa distancia para que el ruido normal no te barra.")
     L.append("")
 
-    # ── Valuación (contexto mínimo) ──
+    # ── Valuación (contexto) ──
     if tec["es_cripto"]:
-        L.append("💰 *Valuación* · cripto, sin fundamentales — lectura 100% técnica")
+        L.append("💰 *Valuación:* es cripto, no tiene fundamentales (P/E, PEG). La lectura es 100% técnica.")
     else:
-        val = evaluar_valuacion(tec["ticker_yf"])
-        L.append(f"💰 *Valuación* · {_valuacion_corta(val)}")
+        L.append("💰 *Valuación (contexto)*")
+        L.append(_valuacion_texto(evaluar_valuacion(tec["ticker_yf"])))
 
     L.append("")
-    L.append("_No es recomendación · confirmá en el gráfico antes de operar_")
+    L.append("_No es recomendación · confirmá siempre en el gráfico antes de operar._")
 
     return "\n".join(L)
