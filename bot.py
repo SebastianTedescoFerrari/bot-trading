@@ -37,6 +37,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Evitar que se logueen las URLs de la API (contienen el token del bot).
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,7 +142,7 @@ def main():
         port = int(os.getenv("PORT", "7860"))
         url_path = TELEGRAM_TOKEN  # ruta secreta del webhook
         webhook_url = f"{public_url.rstrip('/')}/{url_path}"
-        logging.info("Bot en modo webhook: %s", webhook_url)
+        logging.info("Bot en modo webhook activo en %s", public_url)
         app.run_webhook(
             listen="0.0.0.0",
             port=port,
