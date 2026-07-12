@@ -385,14 +385,13 @@ def semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen=N
     }
 
 
-def distancia_maximo_historico(ticker):
+def distancia_maximo_historico(df_diario):
     """
-    Compara el precio actual contra el máximo histórico (todo el historial disponible,
-    no solo la ventana del timeframe elegido).
+    Compara el precio actual contra el máximo histórico (todo el historial diario),
+    a partir de un DataFrame diario ya bajado.
     """
-    df = bajar_datos(ticker, periodo="max", intervalo="1d")
-    ath = float(df["High"].max())
-    precio = float(df["Close"].iloc[-1])
+    ath = float(df_diario["High"].max())
+    precio = float(df_diario["Close"].iloc[-1])
     desvio = (precio - ath) / ath * 100  # <= 0
 
     if desvio >= -0.5:
@@ -403,6 +402,90 @@ def distancia_maximo_historico(ticker):
         texto = f"En una caída del {abs(round(desvio, 1))}% desde su máximo histórico (${round(ath, 2)})."
 
     return {"ath": round(ath, 2), "desvio_pct": round(desvio, 1), "texto": texto}
+
+
+def calcular_atr(df, periodo=14):
+    """
+    ATR (Average True Range): cuánto se mueve el activo por vela, en $ y en %.
+    Sirve para calibrar stops: ni tan pegados que te barran, ni tan lejos que arriesgues de más.
+    """
+    high, low, close = df["High"], df["Low"], df["Close"]
+    prev = close.shift(1)
+    tr = pd.concat([(high - low), (high - prev).abs(), (low - prev).abs()], axis=1).max(axis=1)
+    atr = float(tr.ewm(alpha=1 / periodo, adjust=False).mean().iloc[-1])
+    precio = float(close.iloc[-1])
+    pct = atr / precio * 100 if precio else 0.0
+    return {"atr": round(atr, 2), "pct": round(pct, 1)}
+
+
+def calcular_riesgo_beneficio(precio, fibonacci):
+    """
+    Riesgo/Beneficio hasta los niveles de Fibonacci más cercanos:
+      - Beneficio = distancia hasta la resistencia (lo que podés ganar).
+      - Riesgo    = distancia hasta el soporte (lo que arriesgás).
+    Es lo primero que se mira antes de entrar a una operación.
+    """
+    res, sop = fibonacci["resistencia"], fibonacci["soporte"]
+    gana = (res - precio) / precio * 100
+    arriesga = (precio - sop) / precio * 100
+
+    if gana < 0.2:
+        estado, texto = "en_resistencia", "Pegado a la resistencia (poco recorrido arriba)."
+    elif arriesga < 0.2:
+        estado, texto = "en_soporte", "Pegado al soporte (poco riesgo abajo)."
+    else:
+        ratio = gana / arriesga
+        favorable = ratio >= 1.5
+        estado = "favorable" if favorable else "ajustado"
+        texto = (f"Gana +{gana:.1f}% a ${res} · Arriesga −{arriesga:.1f}% a ${sop} · "
+                 f"R:B 1:{ratio:.1f}" + (" ✅" if favorable else ""))
+    return {"gana_pct": round(gana, 1), "arriesga_pct": round(arriesga, 1),
+            "resistencia": res, "soporte": sop, "estado": estado, "texto": texto}
+
+
+def calcular_variacion_plazos(df_diario):
+    """% de cambio en 1 día, 1 semana (~5 ruedas) y 1 mes (~21 ruedas), sobre datos diarios."""
+    close = df_diario["Close"]
+    precio = float(close.iloc[-1])
+
+    def cambio(n):
+        if len(close) > n:
+            ref = float(close.iloc[-1 - n])
+            if ref:
+                return round((precio - ref) / ref * 100, 1)
+        return None
+
+    return {"1d": cambio(1), "1sem": cambio(5), "1mes": cambio(21)}
+
+
+def detectar_cruce_medias(df, rapida=50, lenta=200, ventana=10):
+    """
+    Detecta un cruce reciente (últimas 'ventana' velas) de la media rápida sobre la lenta:
+      - golden cross (rápida cruza HACIA ARRIBA de la lenta) = sesgo alcista de fondo.
+      - death cross  (rápida cruza HACIA ABAJO) = sesgo bajista de fondo.
+    Señal lenta, de tendencia mayor. Devuelve None si no hubo cruce reciente.
+    """
+    if len(df) < lenta + ventana:
+        return {"cruce": None, "texto": None}
+    ema_r = df["Close"].ewm(span=rapida, adjust=False).mean()
+    ema_l = df["Close"].ewm(span=lenta, adjust=False).mean()
+    signo = (ema_r - ema_l).apply(lambda x: 1 if x >= 0 else -1)
+    reciente = signo.tail(ventana + 1).tolist()
+
+    cruce = None
+    for i in range(1, len(reciente)):
+        if reciente[i - 1] < 0 and reciente[i] > 0:
+            cruce = "golden"
+        elif reciente[i - 1] > 0 and reciente[i] < 0:
+            cruce = "death"
+
+    if cruce == "golden":
+        texto = "⚡ Golden cross reciente (EMA50 sobre EMA200) — sesgo alcista de fondo."
+    elif cruce == "death":
+        texto = "⚡ Death cross reciente (EMA50 bajo EMA200) — sesgo bajista de fondo."
+    else:
+        texto = None
+    return {"cruce": cruce, "texto": texto}
 
 
 def analisis_tecnico_completo(ticker, timeframe=None):
@@ -417,6 +500,13 @@ def analisis_tecnico_completo(ticker, timeframe=None):
     fibonacci = calcular_fibonacci(df, barras=cfg["fib_barras"])
     divergencias = detectar_divergencias(df)
     volumen = calcular_volumen_relativo(df)
+    atr = calcular_atr(df)
+    riesgo_beneficio = calcular_riesgo_beneficio(precio, fibonacci)
+    cruce = detectar_cruce_medias(df)
+
+    # Datos diarios (todo el historial) una sola vez: sirven para ATH y para momentum.
+    df_diario = bajar_datos(ticker_yf, periodo="max", intervalo="1d")
+
     return {
         "ticker": ticker.strip().upper(),
         "ticker_yf": ticker_yf,
@@ -428,6 +518,10 @@ def analisis_tecnico_completo(ticker, timeframe=None):
         "fibonacci": fibonacci,
         "divergencias": divergencias,
         "volumen": volumen,
-        "ath": distancia_maximo_historico(ticker_yf),
+        "atr": atr,
+        "riesgo_beneficio": riesgo_beneficio,
+        "cruce": cruce,
+        "ath": distancia_maximo_historico(df_diario),
+        "variacion": calcular_variacion_plazos(df_diario),
         "semaforo": semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen),
     }
