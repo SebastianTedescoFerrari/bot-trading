@@ -1,0 +1,17 @@
+[Unit]
+Description=Bot de Trading (Telegram)
+# Esperar a que haya red antes de arrancar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bot-trading
+ExecStart=/home/ubuntu/bot-trading/.venv/bin/python bot.py
+# Si el bot se cae (o se reinicia el servidor), systemd lo vuelve a levantar solo
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

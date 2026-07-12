@@ -1,0 +1,11 @@
+.git
+__pycache__/
+*.pyc
+*.zip
+.venv/
+venv/
+*.log
+.Rhistory
+.claude/
+config/secreto.py
+deploy/

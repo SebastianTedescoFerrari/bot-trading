@@ -1,0 +1,16 @@
+# Secretos LOCALES (token, API keys). config.py ahora es seguro y SÍ se versiona.
+config/secreto.py
+
+# ZIP de despliegue (puede llevar secretos adentro; no subir)
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.log
+
+# Basura de herramientas
+.Rhistory
+.claude/

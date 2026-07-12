@@ -1,0 +1,13 @@
+# Config para desplegar en Render (plan gratis, sin tarjeta).
+# Render lee esto y arma el servicio solo. El token se carga aparte como
+# variable secreta (sync: false = Render te lo pide, no viaja en el repo).
+services:
+  - type: web
+    name: bot-trading
+    runtime: docker
+    plan: free
+    envVars:
+      - key: TELEGRAM_TOKEN
+        sync: false
+      - key: FMP_API_KEY
+        sync: false
