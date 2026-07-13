@@ -45,9 +45,9 @@ def normalizar_ticker(ticker):
 
 # Horizontes disponibles. "diario" es el default (comportamiento histórico del bot).
 TIMEFRAMES = {
-    "diario":  {"period": "1y", "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)"},
-    "semanal": {"period": "5y", "interval": "1wk",  "fib_barras": 52,  "nombre": "Semanal (1 año)"},
-    "1h":      {"period": "1mo", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)"},
+    "diario":  {"period": "1y", "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)", "unidad": "día"},
+    "semanal": {"period": "5y", "interval": "1wk",  "fib_barras": 52,  "nombre": "Semanal (1 año)", "unidad": "semana"},
+    "1h":      {"period": "1mo", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)", "unidad": "hora"},
 }
 
 # Alias que puede escribir el usuario en Telegram -> clave de TIMEFRAMES.
@@ -110,19 +110,19 @@ def contexto_rsi(rsi):
     """
     if rsi < 30:
         estado = "sobreventa"
-        texto = f"RSI {rsi} — sobrevendido, suele preceder rebotes (pero puede seguir cayendo)."
+        texto = f"RSI {round(rsi)} — sobrevendido, suele preceder rebotes (pero puede seguir cayendo)."
     elif rsi < 40:
         estado = "acercandose_sobreventa"
-        texto = f"RSI {rsi} — acercándose a sobreventa, atento a un posible piso."
+        texto = f"RSI {round(rsi)} — acercándose a sobreventa, atento a un posible piso."
     elif rsi <= 60:
         estado = "neutral"
-        texto = f"RSI {rsi} — zona neutral, sin señal de extremo."
+        texto = f"RSI {round(rsi)} — zona neutral, sin señal de extremo."
     elif rsi <= 70:
         estado = "acercandose_sobrecompra"
-        texto = f"RSI {rsi} — acercándose a sobrecompra, el impulso puede estar agotándose."
+        texto = f"RSI {round(rsi)} — acercándose a sobrecompra, el impulso puede estar agotándose."
     else:
         estado = "sobrecompra"
-        texto = f"RSI {rsi} — sobrecomprado, puede venir una corrección (pero puede seguir subiendo)."
+        texto = f"RSI {round(rsi)} — sobrecomprado, puede venir una corrección (pero puede seguir subiendo)."
     return {"valor": rsi, "estado": estado, "texto": texto}
 
 
@@ -365,14 +365,6 @@ def semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen=N
 
     titulo = f"{accion} — {nivel}"
 
-    # El volumen no vota (no cambia el color): solo agrega/quita confianza cuando
-    # YA hay una señal. Con señal + volumen alto, confirma; con volumen flojo, avisa.
-    if net != 0 and volumen:
-        if volumen.get("estado") == "alto":
-            titulo += " · 🔊 volumen confirma"
-        elif volumen.get("estado") == "bajo":
-            titulo += " · 🔈 volumen flojo"
-
     return {
         "color": color,
         "titulo": titulo,
@@ -517,6 +509,7 @@ def analisis_tecnico_completo(ticker, timeframe=None):
         "es_cripto": es_cripto,
         "precio": precio,
         "timeframe_nombre": cfg["nombre"],
+        "timeframe_unidad": cfg["unidad"],
         "rsi": rsi_ctx,
         "medias": medias,
         "fibonacci": fibonacci,

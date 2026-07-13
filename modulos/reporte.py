@@ -19,7 +19,7 @@ def _voto_emoji(signo):
         return "🟢"
     if signo < 0:
         return "🔴"
-    return "⚪"
+    return "🟡"
 
 
 def _pct(x):
@@ -99,30 +99,39 @@ def _lectura(tec, sem):
 
 
 def _bloque_niveles(tec):
+    """Niveles clave explicados en palabras (qué es cada uno y para qué mirarlo)."""
     fib, ath, precio = tec["fibonacci"], tec["ath"], tec["precio"]
-    filas = [
-        f"{'Resistencia':<12}${fib['resistencia']:<10}{fib['resistencia_nombre']}",
-        f"{'Precio':<12}${precio:<10}",
-        f"{'Soporte':<12}${fib['soporte']:<10}{fib['soporte_nombre']}",
-        f"{'Máx. hist.':<12}${ath['ath']:<10}{ath['desvio_pct']:+.1f}%",
+    return [
+        f"🔺 *Resistencia ${fib['resistencia']}* — techo cercano; si lo rompe, habilita más subida.",
+        f"🔹 *Precio ${precio}* — donde cotiza ahora.",
+        f"🔻 *Soporte ${fib['soporte']}* — piso cercano; si aguanta puede rebotar, si lo pierde suele caer más.",
+        f"🏔️ *Máx. histórico ${ath['ath']}* — está {abs(ath['desvio_pct'])}% por debajo de su récord.",
     ]
-    return "```\n" + "\n".join(filas) + "\n```"
 
 
 def _riesgo_beneficio_texto(tec):
+    """
+    Explica el R:B en criollo: qué podés ganar vs qué arriesgás hasta los niveles
+    cercanos, y cómo leer el ratio (por cada 1% arriesgado, cuánto podés ganar).
+    """
     rb = tec["riesgo_beneficio"]
     if rb["estado"] == "favorable":
         ratio = rb["gana_pct"] / rb["arriesga_pct"]
-        return (f"Podés ganar +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) "
+        return (f"si entrás acá, podés ganar +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) "
                 f"arriesgando solo −{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). "
-                f"Relación 1:{ratio:.1f} — favorable ✅")
+                f"Eso es una relación 1:{ratio:.1f} → por cada 1% que arriesgás, podés ganar {ratio:.1f}%. "
+                f"Cuanto más alto ese número, más conviene la operación; acá juega bien a favor ✅.")
     if rb["estado"] == "ajustado":
         ratio = rb["gana_pct"] / rb["arriesga_pct"]
-        return (f"Ganás +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) pero arriesgás "
-                f"−{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). Relación 1:{ratio:.1f} — ajustada.")
+        return (f"ganás +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) pero arriesgás "
+                f"−{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). "
+                f"Eso es una relación 1:{ratio:.1f} → arriesgás más de lo que podés ganar. "
+                f"Para trading no es atractiva (buscás que ese segundo número sea al menos 1,5 o 2).")
     if rb["estado"] == "en_soporte":
-        return f"Está pegado al soporte (${rb['soporte']}): poco para arriesgar abajo, ojo a un posible rebote."
-    return f"Está pegado a la resistencia (${rb['resistencia']}): poco recorrido arriba si no la rompe."
+        return (f"está pegado al soporte (${rb['soporte']}): casi no hay para arriesgar abajo, "
+                f"buen punto para vigilar un posible rebote.")
+    return (f"está pegado a la resistencia (${rb['resistencia']}): poco recorrido arriba "
+            f"si no la rompe, mejor esperar a ver si la supera.")
 
 
 def _momentum_texto(tec):
@@ -174,7 +183,15 @@ def armar_reporte(ticker, timeframe=None):
     L.append("")
 
     # ── Señal (acción + nivel + fila visual de los 4 factores) ──
-    L.append(f"{EMOJI[sem['color']]} *{sem['titulo']}*  ·  {sem['n_acuerdo']}/4 factores")
+    # El volumen no vota: acompaña como confianza cuando ya hay una señal.
+    vol_suffix = ""
+    if sem["net"] != 0:
+        est = tec["volumen"]["estado"]
+        if est == "alto":
+            vol_suffix = " · 🔊 volumen confirma"
+        elif est == "bajo":
+            vol_suffix = " · 🔈 volumen flojo"
+    L.append(f"{EMOJI[sem['color']]} *{sem['titulo']}*  ·  {sem['n_acuerdo']}/4 factores{vol_suffix}")
     L.append(" ".join(_voto_emoji(fac[k]["signo"]) for k in ("rsi", "medias", "fibonacci", "divergencia")))
     L.append("")
 
@@ -183,40 +200,48 @@ def armar_reporte(ticker, timeframe=None):
     L.append(_lectura(tec, sem))
     L.append("")
 
+    # ── ZONA CORTO PLAZO (trading / timing) ──
+    L.append("⏱️ *CORTO PLAZO — para operar (trading)*")
+    L.append("_Cuándo entrar o salir: semáforo, niveles, riesgo/beneficio._")
+    L.append("")
+
     # ── Factores técnicos (cada uno con su explicación) ──
     L.append("📊 *Factores técnicos*")
     L.append(f"{_voto_emoji(fac['rsi']['signo'])} {tec['rsi']['texto']}")
     L.append(f"{_voto_emoji(fac['medias']['signo'])} {tec['medias']['texto']}")
     if fac["fibonacci"]["signo"] > 0:
-        L.append(f"🟢 Fibonacci — pegado al soporte {fib['soporte_nombre']} (${fib['soporte']}); si aguanta, zona de posible rebote.")
+        L.append(f"🟢 Fibonacci — pegado al soporte (${fib['soporte']}); si aguanta, zona de posible rebote.")
     elif fac["fibonacci"]["signo"] < 0:
-        L.append(f"🔴 Fibonacci — pegado a la resistencia {fib['resistencia_nombre']} (${fib['resistencia']}); zona donde suele frenarse.")
+        L.append(f"🔴 Fibonacci — pegado a la resistencia (${fib['resistencia']}); zona donde suele frenarse.")
     else:
-        L.append(f"⚪ Fibonacci — entre el soporte {fib['soporte_nombre']} (${fib['soporte']}) y la resistencia {fib['resistencia_nombre']} (${fib['resistencia']}), sin pegar a ninguno.")
+        L.append(f"🟡 Fibonacci — entre el soporte (${fib['soporte']}) y la resistencia (${fib['resistencia']}), sin pegar a ninguno.")
     L.append(f"{_voto_emoji(fac['divergencia']['signo'])} {tec['divergencias']['texto']}")
     L.append(f"{tec['volumen']['texto']}")
     if tec["cruce"]["texto"]:
         L.append(tec["cruce"]["texto"])
     L.append("")
 
-    # ── Niveles para operar + Riesgo/Beneficio ──
-    L.append("🎯 *Niveles para operar*")
-    L.append(_bloque_niveles(tec))
-    L.append(f"⚖️ *Riesgo/Beneficio:* {_riesgo_beneficio_texto(tec)}")
+    # ── Niveles clave + Riesgo/Beneficio ──
+    L.append("🎯 *Niveles clave* (precios del gráfico para vigilar)")
+    L.extend(_bloque_niveles(tec))
+    L.append(f"⚖️ *Riesgo/Beneficio* (para trading): {_riesgo_beneficio_texto(tec)}")
     L.append("")
 
     # ── Momentum + Volatilidad ──
     L.append(f"📈 *Momentum:* {_momentum_texto(tec)}")
     a = tec["atr"]
-    L.append(f"📏 *Volatilidad:* se mueve ~${a['atr']} ({a['pct']}%) por vela en promedio; "
+    L.append(f"📏 *Volatilidad:* se mueve ~${a['atr']} ({a['pct']}%) por {tec['timeframe_unidad']} en promedio; "
              f"poné el stop más allá de esa distancia para que el ruido normal no te barra.")
     L.append("")
 
-    # ── Valuación (contexto) ──
+    # ── ZONA LARGO PLAZO (inversión) ──
+    L.append("📅 *LARGO PLAZO — para invertir*")
+    L.append("_Si es buena inversión de fondo, más allá del timing de hoy._")
+    L.append("")
     if tec["es_cripto"]:
         L.append("💰 *Valuación:* es cripto, no tiene fundamentales (P/E, PEG). La lectura es 100% técnica.")
     else:
-        L.append("💰 *Valuación (contexto)*")
+        L.append("💰 *Valuación*")
         L.append(_valuacion_texto(evaluar_valuacion(tec["ticker_yf"])))
 
     L.append("")
