@@ -36,11 +36,12 @@ _CACHE_PE_HISTORICO = {}
 _CACHE_INFO = {}
 
 
-def _info_yf(ticker, ttl=600):
+def _info_yf(ticker, ttl=21600):
     """
-    Trae el .info de yfinance con caché y reintentos. Si Yahoo lo frena (rate limit),
-    devuelve {} en vez de romper: así la valuación queda "no disponible" pero el
-    resto del reporte (que es lo técnico) igual sale.
+    Trae el .info de yfinance con caché (6h; los fundamentales casi no cambian intradía)
+    y reintentos. Si Yahoo lo frena (rate limit), devuelve {} en vez de romper: así la
+    valuación degrada pero el resto del reporte (lo técnico) igual sale. Solo se usa como
+    fallback: para acciones de EE.UU. la valuación viene de FMP (más confiable).
     """
     hit = _CACHE_INFO.get(ticker)
     if hit and (time.time() - hit[0]) < ttl:
@@ -102,6 +103,52 @@ def pe_historico_fmp(ticker, anios=5):
     return resultado
 
 
+# Caché de la valuación FMP (P/E actual, PEG, target de analistas).
+_CACHE_FMP_VAL = {}
+_FMP_BASE = "https://financialmodelingprep.com/stable"
+
+
+def datos_fmp_valuacion(ticker, ttl=21600):
+    """
+    Trae de FMP (endpoint stable) el P/E actual (TTM), el PEG y el target de analistas.
+    Es más confiable desde la nube que el .info de Yahoo (que se rate-limitea seguido).
+    Cachea 6h. Devuelve {} si el activo no está en el plan free (ADRs -> 402) o si falla.
+    """
+    if not FMP_API_KEY:
+        return {}
+    hit = _CACHE_FMP_VAL.get(ticker)
+    if hit and (time.time() - hit[0]) < ttl:
+        return hit[1]
+
+    res = {}
+    try:
+        r = requests.get(f"{_FMP_BASE}/ratios-ttm?symbol={ticker}&apikey={FMP_API_KEY}", timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            if isinstance(d, list) and d:
+                pe = d[0].get("priceToEarningsRatioTTM")
+                peg = d[0].get("priceToEarningsGrowthRatioTTM")
+                if pe and pe > 0:
+                    res["pe_actual"] = round(pe, 1)
+                if peg and peg > 0:
+                    res["peg"] = round(peg, 2)
+        r2 = requests.get(f"{_FMP_BASE}/price-target-summary?symbol={ticker}&apikey={FMP_API_KEY}", timeout=10)
+        if r2.status_code == 200:
+            d2 = r2.json()
+            if isinstance(d2, list) and d2:
+                tgt = d2[0].get("lastYearAvgPriceTarget")
+                cnt = d2[0].get("lastYearCount")
+                if tgt:
+                    res["target"] = round(float(tgt), 2)
+                if cnt:
+                    res["n_analistas"] = cnt
+    except Exception:
+        pass
+
+    _CACHE_FMP_VAL[ticker] = (time.time(), res)
+    return res
+
+
 def _intensidad(desvio_pct):
     """
     Dado el % de desvío del P/E vs su histórico, devuelve el escalón alcanzado.
@@ -115,12 +162,19 @@ def _intensidad(desvio_pct):
     return alcanzado
 
 
-def evaluar_valuacion(ticker):
-    """Semáforo de valuación con explicación en criollo."""
-    info = _info_yf(ticker)
+def evaluar_valuacion(ticker, precio_actual=None):
+    """
+    Semáforo de valuación con explicación en criollo.
+    Para acciones de EE.UU. los datos vienen de FMP (confiable desde la nube);
+    Yahoo .info queda como fallback (ADRs, o si FMP no cubre algo).
+    precio_actual: precio ya calculado en la parte técnica (para el upside vs target).
+    """
+    fmp = datos_fmp_valuacion(ticker)
+    # Si FMP ya trae lo esencial (caso acciones US), evitamos depender del .info de Yahoo.
+    info = {} if (fmp.get("pe_actual") and fmp.get("target")) else _info_yf(ticker)
 
-    pe_actual = info.get("trailingPE")
-    peg = info.get("pegRatio")
+    pe_actual = fmp.get("pe_actual") or info.get("trailingPE")
+    peg = fmp.get("peg") or info.get("pegRatio")
     sector = info.get("sector", "su sector")
 
     # --- P/E vs histórico (vía FMP) ---
@@ -192,25 +246,31 @@ def evaluar_valuacion(ticker):
     else:
         resultado["frase_peg"] = None
 
-    # --- Consenso de analistas ---
-    target_mean = info.get("targetMeanPrice")
-    target_low = info.get("targetLowPrice")
+    # --- Consenso de analistas (target de FMP o, si no, de Yahoo) ---
+    target_mean = fmp.get("target") or info.get("targetMeanPrice")
+    target_low = info.get("targetLowPrice")    # el rango solo lo da Yahoo; FMP da el promedio
     target_high = info.get("targetHighPrice")
-    precio = info.get("currentPrice") or info.get("regularMarketPrice")
-    n_analistas = info.get("numberOfAnalystOpinions")
+    n_analistas = fmp.get("n_analistas") or info.get("numberOfAnalystOpinions")
+    precio = precio_actual or info.get("currentPrice") or info.get("regularMarketPrice")
 
     if target_mean and precio:
         upside = (target_mean - precio) / precio * 100
+        if target_low and target_high:
+            frase = (f"Los analistas ven un precio objetivo promedio de ${round(target_mean,2)} "
+                     f"(rango ${round(target_low,2)}–${round(target_high,2)}), "
+                     f"un {'+' if upside>=0 else ''}{round(upside,1)}% desde hoy. "
+                     f"Basado en {n_analistas} analistas.")
+        else:
+            frase = (f"Los analistas ven un precio objetivo promedio de ${round(target_mean,2)}, "
+                     f"un {'+' if upside>=0 else ''}{round(upside,1)}% desde hoy. "
+                     f"Basado en {n_analistas} analistas.")
         resultado["consenso"] = {
             "target": round(target_mean, 2),
             "rango": (round(target_low, 2) if target_low else None,
                       round(target_high, 2) if target_high else None),
             "upside_pct": round(upside, 1),
             "n_analistas": n_analistas,
-            "frase": (f"Los analistas ven un precio objetivo promedio de ${round(target_mean,2)} "
-                      f"(rango ${round(target_low,2)}–${round(target_high,2)}), "
-                      f"un {'+' if upside>=0 else ''}{round(upside,1)}% desde hoy. "
-                      f"Basado en {n_analistas} analistas."),
+            "frase": frase,
         }
     else:
         resultado["consenso"] = None

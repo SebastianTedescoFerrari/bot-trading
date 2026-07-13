@@ -281,26 +281,48 @@ def detectar_divergencias(df, periodo_rsi=14, ventana=60, orden=5):
     return resultado
 
 
-def calcular_volumen_relativo(df, ventana=20):
+def calcular_volumen_relativo(df, unidad="día", ventana=20):
     """
-    Volumen de la última rueda comparado con su promedio de las últimas 'ventana' ruedas.
+    Volumen de la última vela COMPLETA comparado con el promedio de las anteriores.
 
     NO es una señal de compra/venta: es un CONFIRMADOR. Un movimiento con volumen alto
-    tiene fuerza real detrás; con volumen flojo suele ser un amague. Se usa para darle
-    (o quitarle) confianza a la señal técnica, no para generar una nueva.
+    tiene fuerza real detrás; con volumen flojo suele ser un amague.
+
+    OJO: la última vela puede estar EN CURSO (volumen parcial). Ej: si corrés el bot
+    antes de que abra el mercado, la vela del día tiene volumen ~0 y daría un falso
+    "0.0x". Por eso, si la última vela es del período actual (o tiene volumen 0), la
+    descartamos y usamos la última vela completa. El promedio también la excluye.
     """
     vols = df["Volume"].dropna()
-    if len(vols) < 5 or float(vols.iloc[-1]) == 0:
+    if len(vols) < ventana + 2:
         return {"ratio": None, "estado": "sin_datos",
                 "texto": "Volumen no disponible para este activo."}
 
-    hoy = float(vols.iloc[-1])
-    promedio = float(vols.tail(ventana).mean())
+    idx = df.index
+    ahora = pd.Timestamp.now(tz=idx.tz) if getattr(idx, "tz", None) is not None else pd.Timestamp.now()
+    ult = idx[-1]
+    if unidad == "día":
+        en_curso = ult.date() == ahora.date()
+    elif unidad == "semana":
+        en_curso = ult.strftime("%G-%V") == ahora.strftime("%G-%V")
+    elif unidad == "hora":
+        en_curso = ult.floor("h") == ahora.floor("h")
+    else:
+        en_curso = False
+    if en_curso or float(vols.iloc[-1]) == 0:
+        vols = vols.iloc[:-1]   # descartar la vela en curso / vacía
+
+    if len(vols) < ventana + 1:
+        return {"ratio": None, "estado": "sin_datos",
+                "texto": "Volumen no disponible para este activo."}
+
+    actual = float(vols.iloc[-1])                          # última vela COMPLETA
+    promedio = float(vols.iloc[-(ventana + 1):-1].mean())  # promedio de las anteriores (sin la actual)
     if promedio <= 0:
         return {"ratio": None, "estado": "sin_datos",
                 "texto": "Volumen no disponible para este activo."}
 
-    ratio = hoy / promedio
+    ratio = actual / promedio
     if ratio >= 1.5:
         estado = "alto"
         texto = (f"🔊 Volumen {ratio:.1f}x su promedio — hay fuerza real detrás del "
@@ -582,7 +604,7 @@ def analisis_tecnico_completo(ticker, timeframe=None):
     medias = calcular_medias(df)
     fibonacci = calcular_fibonacci(df, barras=cfg["fib_barras"])
     divergencias = detectar_divergencias(df)
-    volumen = calcular_volumen_relativo(df)
+    volumen = calcular_volumen_relativo(df, cfg["unidad"])
     atr = calcular_atr(df)
     cruce = detectar_cruce_medias(df)
 

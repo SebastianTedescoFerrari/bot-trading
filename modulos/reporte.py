@@ -307,7 +307,7 @@ def armar_reporte(ticker, timeframe=None):
             L.append("Lectura 100% técnica.")
     else:
         L.append("💰 *Valuación*")
-        L.append(_valuacion_texto(evaluar_valuacion(tec["ticker_yf"])))
+        L.append(_valuacion_texto(evaluar_valuacion(tec["ticker_yf"], tec["precio"])))
         if zona:
             L.append(f"📉 *Zona de precio:* {zona} {_fase_acumulacion_texto(fase)}")
 
