@@ -8,9 +8,27 @@ separados. Formato con secciones claras y un bloque de niveles como tabla.
 """
 
 from modulos.tecnico import analisis_tecnico_completo
-from modulos.valuacion import evaluar_valuacion
+from modulos.valuacion import evaluar_valuacion, nombre_fmp
 
 EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
+
+# Nombres de cripto (FMP no los trae; los tenemos nosotros por la lista de símbolos).
+NOMBRES_CRIPTO = {
+    "BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana", "XRP": "XRP", "BNB": "BNB",
+    "ADA": "Cardano", "DOGE": "Dogecoin", "AVAX": "Avalanche", "DOT": "Polkadot",
+    "LINK": "Chainlink", "LTC": "Litecoin", "BCH": "Bitcoin Cash", "XLM": "Stellar",
+    "ATOM": "Cosmos", "NEAR": "NEAR Protocol", "MATIC": "Polygon", "POL": "Polygon",
+    "TRX": "TRON", "UNI": "Uniswap", "ETC": "Ethereum Classic", "SHIB": "Shiba Inu",
+    "APT": "Aptos", "ARB": "Arbitrum", "OP": "Optimism", "FIL": "Filecoin",
+    "ICP": "Internet Computer",
+}
+
+
+def _nombre_activo(tec):
+    """Nombre del activo: dict para cripto, FMP profile para acciones/ADRs."""
+    if tec["es_cripto"]:
+        return NOMBRES_CRIPTO.get(tec["ticker"])
+    return nombre_fmp(tec["ticker_yf"])
 
 
 def _voto_emoji(signo):
@@ -229,7 +247,9 @@ def armar_reporte(ticker, timeframe=None):
 
     L = []
     # ── Encabezado ──
-    L.append(f"📊 *{tec['ticker']}* · ${tec['precio']}")
+    nombre = _nombre_activo(tec)
+    encabezado = f"{tec['ticker']} — {nombre}" if nombre else tec["ticker"]
+    L.append(f"📊 *{encabezado}* · ${tec['precio']}")
     L.append(f"_{tec['timeframe_nombre']}_")
     L.append("")
 

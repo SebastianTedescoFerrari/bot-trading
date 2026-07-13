@@ -149,6 +149,31 @@ def datos_fmp_valuacion(ticker, ttl=21600):
     return res
 
 
+# Caché del nombre de la empresa (cambia casi nunca).
+_CACHE_NOMBRE = {}
+
+
+def nombre_fmp(ticker, ttl=604800):
+    """Nombre de la empresa vía FMP profile (cubre acciones US y ADRs). None si falla."""
+    if not FMP_API_KEY:
+        return None
+    hit = _CACHE_NOMBRE.get(ticker)
+    if hit and (time.time() - hit[0]) < ttl:
+        return hit[1]
+    nombre = None
+    try:
+        r = requests.get(f"{_FMP_BASE}/profile?symbol={ticker}&apikey={FMP_API_KEY}", timeout=10)
+        if r.status_code == 200:
+            d = r.json()
+            if isinstance(d, list) and d:
+                nombre = d[0].get("companyName") or None
+    except Exception:
+        pass
+    if nombre:  # solo cacheamos aciertos (si falla, reintenta la próxima)
+        _CACHE_NOMBRE[ticker] = (time.time(), nombre)
+    return nombre
+
+
 def _intensidad(desvio_pct):
     """
     Dado el % de desvío del P/E vs su histórico, devuelve el escalón alcanzado.
