@@ -414,29 +414,55 @@ def calcular_atr(df, periodo=14):
     return {"atr": round(atr, 2), "pct": round(pct, 1)}
 
 
-def calcular_riesgo_beneficio(precio, fibonacci):
+def _rb_direccion(gana, arriesga):
     """
-    Riesgo/Beneficio hasta los niveles de Fibonacci más cercanos:
-      - Beneficio = distancia hasta la resistencia (lo que podés ganar).
-      - Riesgo    = distancia hasta el soporte (lo que arriesgás).
-    Es lo primero que se mira antes de entrar a una operación.
+    Clasifica un R:B a partir del % a ganar y del % a arriesgar.
+    Devuelve (tipo, ratio). tipo: favorable / neutro / malo / sin_recorrido / pegado.
+    """
+    if gana < 0.2:
+        return "sin_recorrido", None   # el objetivo está pegado (casi no hay para ganar)
+    if arriesga < 0.2:
+        return "pegado", None          # el stop está pegado (casi no hay para arriesgar)
+    ratio = gana / arriesga
+    if ratio >= 1.5:
+        tipo = "favorable"
+    elif ratio >= 1:
+        tipo = "neutro"
+    else:
+        tipo = "malo"
+    return tipo, round(ratio, 1)
+
+
+def calcular_escenarios(precio, fibonacci, net):
+    """
+    Analiza los DOS escenarios de trade (long y short) usando los niveles de Fibonacci,
+    e indica cuál es el más probable según el sesgo del semáforo técnico (net).
+
+    - LONG (comprar): objetivo = resistencia (subís), stop = soporte (bajás).
+    - SHORT (vender en corto): objetivo = soporte (baja), stop = resistencia (sube).
+    El R:B de uno es el inverso del otro: los niveles favorecen a una sola dirección.
     """
     res, sop = fibonacci["resistencia"], fibonacci["soporte"]
-    gana = (res - precio) / precio * 100
-    arriesga = (precio - sop) / precio * 100
+    subida = (res - precio) / precio * 100   # % hasta la resistencia
+    bajada = (precio - sop) / precio * 100    # % hasta el soporte
 
-    if gana < 0.2:
-        estado, texto = "en_resistencia", "Pegado a la resistencia (poco recorrido arriba)."
-    elif arriesga < 0.2:
-        estado, texto = "en_soporte", "Pegado al soporte (poco riesgo abajo)."
+    long_tipo, long_ratio = _rb_direccion(subida, bajada)
+    short_tipo, short_ratio = _rb_direccion(bajada, subida)
+
+    if net > 0:
+        favorito = "long"
+    elif net < 0:
+        favorito = "short"
     else:
-        ratio = gana / arriesga
-        favorable = ratio >= 1.5
-        estado = "favorable" if favorable else "ajustado"
-        texto = (f"Gana +{gana:.1f}% a ${res} · Arriesga −{arriesga:.1f}% a ${sop} · "
-                 f"R:B 1:{ratio:.1f}" + (" ✅" if favorable else ""))
-    return {"gana_pct": round(gana, 1), "arriesga_pct": round(arriesga, 1),
-            "resistencia": res, "soporte": sop, "estado": estado, "texto": texto}
+        favorito = "ninguno"
+
+    return {
+        "resistencia": res, "soporte": sop,
+        "subida_pct": round(subida, 1), "bajada_pct": round(bajada, 1),
+        "long": {"tipo": long_tipo, "ratio": long_ratio},
+        "short": {"tipo": short_tipo, "ratio": short_ratio},
+        "favorito": favorito,
+    }
 
 
 def calcular_variacion_plazos(df_diario):
@@ -497,8 +523,11 @@ def analisis_tecnico_completo(ticker, timeframe=None):
     divergencias = detectar_divergencias(df)
     volumen = calcular_volumen_relativo(df)
     atr = calcular_atr(df)
-    riesgo_beneficio = calcular_riesgo_beneficio(precio, fibonacci)
     cruce = detectar_cruce_medias(df)
+
+    # El semáforo define el sesgo (net); con eso se decide el escenario más probable.
+    semaforo = semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen)
+    escenarios = calcular_escenarios(precio, fibonacci, semaforo["net"])
 
     # Datos diarios (todo el historial) una sola vez: sirven para ATH y para momentum.
     df_diario = bajar_datos(ticker_yf, periodo="max", intervalo="1d")
@@ -516,9 +545,9 @@ def analisis_tecnico_completo(ticker, timeframe=None):
         "divergencias": divergencias,
         "volumen": volumen,
         "atr": atr,
-        "riesgo_beneficio": riesgo_beneficio,
+        "escenarios": escenarios,
         "cruce": cruce,
         "ath": distancia_maximo_historico(df_diario),
         "variacion": calcular_variacion_plazos(df_diario),
-        "semaforo": semaforo_tecnico(precio, rsi_ctx, medias, fibonacci, divergencias, volumen),
+        "semaforo": semaforo,
     }

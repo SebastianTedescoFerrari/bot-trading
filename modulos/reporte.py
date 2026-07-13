@@ -88,12 +88,23 @@ def _lectura(tec, sem):
     elif tec["volumen"]["estado"] == "bajo":
         P.append("El volumen está flojo, así que conviene tomar la señal con cautela (puede ser un amague).")
 
-    # 7) Cierre con riesgo/beneficio si es relevante
-    rb = tec["riesgo_beneficio"]
-    if rb["estado"] == "favorable":
-        P.append(f"Encima, la relación riesgo/beneficio hasta los niveles cercanos juega a favor: podés ganar más de lo que arriesgás.")
-    elif rb["estado"] == "ajustado":
-        P.append("Ojo que la relación riesgo/beneficio hasta los niveles cercanos es ajustada: el premio no compensa tanto el riesgo.")
+    # 7) Cierre con el escenario más probable y su riesgo/beneficio
+    esc = tec["escenarios"]
+    fav = esc["favorito"]
+    if fav == "long":
+        tipo = esc["long"]["tipo"]
+        if tipo == "favorable":
+            P.append("El escenario más probable es un LONG (a la suba), y encima el riesgo/beneficio hasta los niveles cercanos juega a favor.")
+        elif tipo in ("neutro", "malo"):
+            P.append("El escenario más probable es un LONG (a la suba), aunque el riesgo/beneficio en este punto no es el ideal: quizás convenga esperar una mejor entrada.")
+    elif fav == "short":
+        tipo = esc["short"]["tipo"]
+        if tipo == "favorable":
+            P.append("El escenario más probable es un SHORT (a la baja), y el riesgo/beneficio hasta los niveles cercanos juega a favor.")
+        elif tipo in ("neutro", "malo"):
+            P.append("El escenario más probable es un SHORT (a la baja), aunque el riesgo/beneficio en este punto no es el ideal.")
+    else:
+        P.append("No hay un escenario (long ni short) que se destaque: mejor esperar a que el gráfico defina.")
 
     return " ".join(P)
 
@@ -109,29 +120,46 @@ def _bloque_niveles(tec):
     ]
 
 
-def _riesgo_beneficio_texto(tec):
-    """
-    Explica el R:B en criollo: qué podés ganar vs qué arriesgás hasta los niveles
-    cercanos, y cómo leer el ratio (por cada 1% arriesgado, cuánto podés ganar).
-    """
-    rb = tec["riesgo_beneficio"]
-    if rb["estado"] == "favorable":
-        ratio = rb["gana_pct"] / rb["arriesga_pct"]
-        return (f"si entrás acá, podés ganar +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) "
-                f"arriesgando solo −{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). "
-                f"Eso es una relación 1:{ratio:.1f} → por cada 1% que arriesgás, podés ganar {ratio:.1f}%. "
-                f"Cuanto más alto ese número, más conviene la operación; acá juega bien a favor ✅.")
-    if rb["estado"] == "ajustado":
-        ratio = rb["gana_pct"] / rb["arriesga_pct"]
-        return (f"ganás +{rb['gana_pct']}% hasta la resistencia (${rb['resistencia']}) pero arriesgás "
-                f"−{rb['arriesga_pct']}% hasta el soporte (${rb['soporte']}). "
-                f"Eso es una relación 1:{ratio:.1f} → arriesgás más de lo que podés ganar. "
-                f"Para trading no es atractiva (buscás que ese segundo número sea al menos 1,5 o 2).")
-    if rb["estado"] == "en_soporte":
-        return (f"está pegado al soporte (${rb['soporte']}): casi no hay para arriesgar abajo, "
-                f"buen punto para vigilar un posible rebote.")
-    return (f"está pegado a la resistencia (${rb['resistencia']}): poco recorrido arriba "
-            f"si no la rompe, mejor esperar a ver si la supera.")
+_RB_MARCA = {"favorable": "✅ favorable", "neutro": "⚖️ parejo", "malo": "❌ no conviene"}
+
+
+def _rb_linea(esc, direccion):
+    """Arma la línea de un escenario (long o short) con objetivo, stop y ratio."""
+    res, sop = esc["resistencia"], esc["soporte"]
+    if direccion == "long":
+        d = esc["long"]
+        cuerpo = (f"objetivo ${res} (ganás +{esc['subida_pct']}% si sube), "
+                  f"stop ${sop} (perdés −{esc['bajada_pct']}% si baja)")
+    else:
+        d = esc["short"]
+        cuerpo = (f"objetivo ${sop} (ganás +{esc['bajada_pct']}% si baja), "
+                  f"stop ${res} (perdés −{esc['subida_pct']}% si sube)")
+
+    if d["tipo"] == "pegado":
+        return f"{cuerpo} — stop pegado, casi sin riesgo pero muy poco margen."
+    if d["tipo"] == "sin_recorrido":
+        return f"{cuerpo} — objetivo pegado, casi sin recorrido para ganar."
+    return f"{cuerpo}. R:B 1:{d['ratio']} — {_RB_MARCA[d['tipo']]}"
+
+
+def _escenarios_texto(tec):
+    """Devuelve las líneas de la sección de escenarios (más probable + long + short)."""
+    esc = tec["escenarios"]
+    fav = esc["favorito"]
+    L = []
+
+    if fav == "long":
+        L.append("🎯 *Más probable: LONG (al alza)* — los factores técnicos se inclinan a la suba.")
+    elif fav == "short":
+        L.append("🎯 *Más probable: SHORT (a la baja)* — los factores técnicos se inclinan a la baja.")
+    else:
+        L.append("🎯 *Sin escenario claro* — los factores están parejos; para el bot, mejor esperar.")
+
+    marca_long = " 👈" if fav == "long" else ""
+    marca_short = " 👈" if fav == "short" else ""
+    L.append(f"📈 *LONG* (comprás esperando que suba){marca_long}: {_rb_linea(esc, 'long')}")
+    L.append(f"📉 *SHORT* (vendés en corto esperando que baje){marca_short}: {_rb_linea(esc, 'short')}")
+    return L
 
 
 def _momentum_texto(tec):
@@ -221,10 +249,16 @@ def armar_reporte(ticker, timeframe=None):
         L.append(tec["cruce"]["texto"])
     L.append("")
 
-    # ── Niveles clave + Riesgo/Beneficio ──
+    # ── Niveles clave ──
     L.append("🎯 *Niveles clave* (precios del gráfico para vigilar)")
     L.extend(_bloque_niveles(tec))
-    L.append(f"⚖️ *Riesgo/Beneficio* (para trading): {_riesgo_beneficio_texto(tec)}")
+    L.append("")
+
+    # ── Escenarios long / short (para trading) ──
+    L.append("⚖️ *Escenarios de trade* (long vs short)")
+    L.extend(_escenarios_texto(tec))
+    L.append("_Recordá: el R:B 1:X = por cada 1% que arriesgás, podés ganar X%. "
+             "Cuanto más alto, mejor la operación._")
     L.append("")
 
     # ── Momentum + Volatilidad ──
