@@ -173,6 +173,29 @@ def _momentum_texto(tec):
     return base
 
 
+def _zona_ath_texto(ath):
+    """Qué tan barato/caro está en términos históricos, por distancia al máximo."""
+    desvio = ath["desvio_pct"]
+    if desvio is None:
+        return None
+    d = abs(desvio)
+    if desvio >= -10:
+        return f"Está cerca de sus máximos históricos (${ath['ath']}) — caro en términos históricos."
+    etiqueta = "precio intermedio" if d <= 30 else ("zona baja" if d <= 50 else "zona históricamente barata")
+    return f"Está a −{d}% de su máximo histórico (${ath['ath']}) — {etiqueta}."
+
+
+def _fase_acumulacion_texto(fase):
+    """Guía de acumulación según si el precio dejó de caer o no."""
+    if fase == "bajando":
+        return ("↘️ Pero todavía viene *cayendo*: cuidado con acumular en plena caída "
+                "(\"cuchillo cayendo\"); conviene esperar a que se estabilice.")
+    if fase == "lateral":
+        return ("↔️ Y el precio viene *lateralizando* (dejó de caer): suele ser mejor "
+                "momento para acumular de a poco que en plena caída.")
+    return "↗️ Y ya viene *recuperando*: el rebote puede haber arrancado."
+
+
 def _valuacion_texto(val):
     P = []
     c = val.get("consenso")
@@ -272,11 +295,21 @@ def armar_reporte(ticker, timeframe=None):
     L.append("📅 *LARGO PLAZO — para invertir*")
     L.append("_Si es buena inversión de fondo, más allá del timing de hoy._")
     L.append("")
+    zona = _zona_ath_texto(tec["ath"])
+    fase = tec["fase"]["fase"]
     if tec["es_cripto"]:
-        L.append("💰 *Valuación:* es cripto, no tiene fundamentales (P/E, PEG). La lectura es 100% técnica.")
+        # Cripto no tiene P/E; la lectura de "barato/caro" es por distancia al máximo.
+        L.append("💰 *Zona de precio* (cripto, sin fundamentales)")
+        if zona:
+            L.append(f"📉 {zona}")
+            L.append(_fase_acumulacion_texto(fase))
+        else:
+            L.append("Lectura 100% técnica.")
     else:
         L.append("💰 *Valuación*")
         L.append(_valuacion_texto(evaluar_valuacion(tec["ticker_yf"])))
+        if zona:
+            L.append(f"📉 *Zona de precio:* {zona} {_fase_acumulacion_texto(fase)}")
 
     L.append("")
     L.append("_No es recomendación · confirmá siempre en el gráfico antes de operar._")

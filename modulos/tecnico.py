@@ -548,6 +548,29 @@ def detectar_cruce_medias(df, rapida=50, lenta=200, ventana=10):
     return {"cruce": cruce, "texto": texto}
 
 
+def detectar_fase(df, ventana=30):
+    """
+    Detecta la FASE reciente del precio en las últimas 'ventana' velas:
+      - "bajando": viene en caída (cuidado con acumular, "cuchillo cayendo").
+      - "lateral": se estabilizó / lateraliza (dejó de caer; mejor zona para acumular de a poco).
+      - "subiendo": viene recuperando.
+    Se mide con el cambio neto punta a punta y el ancho del rango.
+    """
+    reciente = df["Close"].tail(ventana)
+    if len(reciente) < 5:
+        return {"fase": "indefinida", "cambio_pct": None}
+    ini, fin = float(reciente.iloc[0]), float(reciente.iloc[-1])
+    cambio = (fin - ini) / ini * 100 if ini else 0.0
+
+    if cambio <= -8:
+        fase = "bajando"
+    elif cambio >= 8:
+        fase = "subiendo"
+    else:
+        fase = "lateral"
+    return {"fase": fase, "cambio_pct": round(cambio, 1)}
+
+
 def analisis_tecnico_completo(ticker, timeframe=None):
     """Junta todo el análisis técnico de un ticker en un solo diccionario."""
     ticker_yf, es_cripto = normalizar_ticker(ticker)
@@ -585,6 +608,7 @@ def analisis_tecnico_completo(ticker, timeframe=None):
         "atr": atr,
         "escenarios": escenarios,
         "cruce": cruce,
+        "fase": detectar_fase(df),
         "ath": distancia_maximo_historico(df_diario),
         "variacion": calcular_variacion_plazos(df_diario),
         "semaforo": semaforo,
