@@ -14,6 +14,8 @@ Fuentes: yfinance para casi todo. Para fundamentales más finos se puede
 sumar Financial Modeling Prep (API key gratis) — ver config/ejemplo_config.py.
 """
 
+import time
+
 import yfinance as yf
 import requests
 
@@ -29,6 +31,31 @@ ESCALONES = [15, 20, 30, 40, 50, 60, 70, 80, 90]
 # Caché en memoria del P/E histórico por ticker, para no pegarle a FMP en cada consulta
 # (útil sobre todo en /revisar, que corre muchos activos seguidos).
 _CACHE_PE_HISTORICO = {}
+
+# Caché del .info de yfinance (el pedido más pesado y el que más se rate-limitea).
+_CACHE_INFO = {}
+
+
+def _info_yf(ticker, ttl=600):
+    """
+    Trae el .info de yfinance con caché y reintentos. Si Yahoo lo frena (rate limit),
+    devuelve {} en vez de romper: así la valuación queda "no disponible" pero el
+    resto del reporte (que es lo técnico) igual sale.
+    """
+    hit = _CACHE_INFO.get(ticker)
+    if hit and (time.time() - hit[0]) < ttl:
+        return hit[1]
+    for i in range(3):
+        try:
+            info = yf.Ticker(ticker).info
+            if info:
+                _CACHE_INFO[ticker] = (time.time(), info)
+                return info
+        except Exception:
+            pass
+        if i < 2:
+            time.sleep(1.0 * (i + 1))
+    return {}
 
 
 def pe_historico_fmp(ticker, anios=5):
@@ -90,7 +117,7 @@ def _intensidad(desvio_pct):
 
 def evaluar_valuacion(ticker):
     """Semáforo de valuación con explicación en criollo."""
-    info = yf.Ticker(ticker).info
+    info = _info_yf(ticker)
 
     pe_actual = info.get("trailingPE")
     peg = info.get("pegRatio")

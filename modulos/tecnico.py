@@ -11,9 +11,27 @@ Fuente de datos: yfinance (gratis, sin API key).
 Todo el análisis se calcula con datos actuales bajados al momento.
 """
 
+import time
+
 import yfinance as yf
 import pandas as pd
 import numpy as np
+
+
+# ── Caché simple en memoria para no golpear a Yahoo de más (rate limit) ──
+# Guarda cada descarga por un rato; así consultas repetidas y /revisar pesan mucho menos.
+_CACHE = {}
+
+
+def _cache_get(key, ttl):
+    hit = _CACHE.get(key)
+    if hit and (time.time() - hit[0]) < ttl:
+        return hit[1]
+    return None
+
+
+def _cache_set(key, valor):
+    _CACHE[key] = (time.time(), valor)
 
 
 # Símbolos de cripto conocidos. En yfinance cotizan como "BTC-USD", no "BTC".
@@ -83,11 +101,31 @@ def bajar_datos(ticker, periodo="1y", intervalo="1d"):
     por 20 años de dividendos acumulados). Con auto_adjust=False se mantienen
     los precios tal como se operaron (solo ajustados por splits), que es lo que
     hace falta para niveles técnicos (soportes, resistencias, máximos) reales.
+
+    Además usa caché y reintentos para sobrevivir al rate limit de Yahoo, frecuente
+    desde IPs de datacenter (como la de Render).
     """
-    df = yf.Ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
-    if df.empty:
-        raise ValueError(f"No se pudieron bajar datos de {ticker}")
-    return df
+    key = ("hist", ticker, periodo, intervalo)
+    # El histórico completo ("max") cambia poco -> se cachea más tiempo.
+    ttl = 3600 if periodo == "max" else 600
+    cacheado = _cache_get(key, ttl)
+    if cacheado is not None:
+        return cacheado
+
+    ultimo_error = None
+    for i in range(3):
+        try:
+            df = yf.Ticker(ticker).history(period=periodo, interval=intervalo, auto_adjust=False)
+            if not df.empty:
+                _cache_set(key, df)
+                return df
+            ultimo_error = ValueError(f"No se pudieron bajar datos de {ticker}")
+        except Exception as e:
+            ultimo_error = e
+        if i < 2:
+            time.sleep(1.0 * (i + 1))  # espera creciente entre reintentos
+
+    raise ultimo_error if ultimo_error else ValueError(f"No se pudieron bajar datos de {ticker}")
 
 
 def calcular_rsi(df, periodo=14):
