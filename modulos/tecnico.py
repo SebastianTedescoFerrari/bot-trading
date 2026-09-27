@@ -62,10 +62,13 @@ def normalizar_ticker(ticker):
 
 
 # Horizontes disponibles. "diario" es el default (comportamiento histórico del bot).
+# "period" es cuánto historial se baja: tiene que alcanzar para que la EMA200 converja
+# y dé igual que en TradingView (con 1 año de diario quedaba ~1% corrida). Fibonacci,
+# divergencias, volumen y fase usan solo las últimas N velas, así que no cambian.
 TIMEFRAMES = {
-    "diario":  {"period": "1y", "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)", "unidad": "día"},
-    "semanal": {"period": "5y", "interval": "1wk",  "fib_barras": 52,  "nombre": "Semanal (1 año)", "unidad": "semana"},
-    "1h":      {"period": "1mo", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)", "unidad": "hora"},
+    "diario":  {"period": "5y",  "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)", "unidad": "día"},
+    "semanal": {"period": "max", "interval": "1wk", "fib_barras": 52,  "nombre": "Semanal (1 año)", "unidad": "semana"},
+    "1h":      {"period": "6mo", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)", "unidad": "hora"},
 }
 
 # Alias que puede escribir el usuario en Telegram -> clave de TIMEFRAMES.
@@ -164,12 +167,29 @@ def contexto_rsi(rsi):
     return {"valor": rsi, "estado": estado, "texto": texto}
 
 
+def ema_tv(serie, n):
+    """
+    EMA calculada EXACTAMENTE como TradingView (ta.ema de Pine Script): arranca con la
+    SMA de las primeras n velas y después aplica la fórmula recursiva (alpha = 2/(n+1)).
+    La ewm de pandas arranca desde la primera vela y, con poco historial, la EMA200
+    quedaba ~1% distinta de la que ves en TradingView.
+    """
+    vals = serie.to_numpy(dtype=float)
+    out = np.full(len(vals), np.nan)
+    if len(vals) >= n:
+        alpha = 2 / (n + 1)
+        out[n - 1] = vals[:n].mean()
+        for i in range(n, len(vals)):
+            out[i] = alpha * vals[i] + (1 - alpha) * out[i - 1]
+    return pd.Series(out, index=serie.index)
+
+
 def calcular_medias(df):
     """EMA 20/50/200 y lectura de dónde está el precio respecto a ellas."""
     precio = float(df["Close"].iloc[-1])
-    ema20 = float(df["Close"].ewm(span=20, adjust=False).mean().iloc[-1])
-    ema50 = float(df["Close"].ewm(span=50, adjust=False).mean().iloc[-1])
-    ema200 = float(df["Close"].ewm(span=200, adjust=False).mean().iloc[-1])
+    ema20 = float(ema_tv(df["Close"], 20).iloc[-1])
+    ema50 = float(ema_tv(df["Close"], 50).iloc[-1])
+    ema200 = float(ema_tv(df["Close"], 200).iloc[-1])
 
     sobre = [n for n, e in [("EMA20", ema20), ("EMA50", ema50), ("EMA200", ema200)] if precio >= e]
     bajo = [n for n, e in [("EMA20", ema20), ("EMA50", ema50), ("EMA200", ema200)] if precio < e]
@@ -549,9 +569,9 @@ def detectar_cruce_medias(df, rapida=50, lenta=200, ventana=10):
     """
     if len(df) < lenta + ventana:
         return {"cruce": None, "texto": None}
-    ema_r = df["Close"].ewm(span=rapida, adjust=False).mean()
-    ema_l = df["Close"].ewm(span=lenta, adjust=False).mean()
-    signo = (ema_r - ema_l).apply(lambda x: 1 if x >= 0 else -1)
+    ema_r = ema_tv(df["Close"], rapida)
+    ema_l = ema_tv(df["Close"], lenta)
+    signo = (ema_r - ema_l).dropna().apply(lambda x: 1 if x >= 0 else -1)
     reciente = signo.tail(ventana + 1).tolist()
 
     cruce = None
