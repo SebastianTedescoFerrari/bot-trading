@@ -190,4 +190,5 @@ MOVIMIENTO_INTRADIA = True       # también avisar un movimiento fuerte mientras
 VOLUMEN_MINIMO_CONVICCION = 0.7  # debajo de esto (x promedio), la señal va marcada "baja convicción"
 ANTISPAM_HORAS = 24              # la misma señal del mismo activo no se repite antes de esto
 HORA_RESUMEN = 8                 # resumen diario de señales no urgentes (hora de Madrid)
+HORARIO_ALERTAS = (7, 23)        # el sistema solo corre de 07:00 a 23:00 (hora de Madrid)
 ZONA_HORARIA = "Europe/Madrid"

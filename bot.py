@@ -41,6 +41,14 @@ logging.basicConfig(
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+async def chatid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Devuelve el chat id: hace falta para que el sistema de alertas sepa a quién escribirle."""
+    await update.message.reply_text(
+        f"Tu chat id es: {update.effective_chat.id}\n\n"
+        "Cargalo en GitHub como secret TELEGRAM_CHAT_ID para que el sistema de alertas te escriba."
+    )
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     grupos = ", ".join(WATCHLIST_GRUPOS.keys())
     msg = (
@@ -117,6 +125,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("revisar", revisar))
+    app.add_handler(CommandHandler("chatid", chatid))
 
     # Cualquier otro /comando se interpreta como un ticker.
     # (python-telegram-bot: capturamos por regex de comando genérico)

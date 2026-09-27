@@ -15,6 +15,7 @@ Opciones:
   --tickers NVDA,BTC                     Solo esos activos.
   --estado RUTA --guardar-estado         Usa/guarda otro archivo de estado (para probar el anti-spam).
   --forzar-resumen                       Manda el resumen aunque no sean las 08:00.
+  --ignorar-horario                      Corre aunque sea fuera de 07:00–23:00 (corridas manuales).
 """
 
 import argparse
@@ -53,6 +54,17 @@ def enviar_telegram(texto, es_html=False):
     return r.ok
 
 
+def dentro_de_horario(ahora):
+    """
+    ¿Estamos dentro del horario de alertas (HORARIO_ALERTAS, hora de Madrid)?
+    GitHub Actions programa en UTC y no sabe de horario de verano: el cron cubre una franja
+    más amplia y acá se descarta lo que cae afuera. Se tolera hasta 23:15 por las demoras
+    habituales de los cron de GitHub.
+    """
+    desde, hasta = C.HORARIO_ALERTAS
+    return desde <= ahora.hour < hasta or (ahora.hour == hasta and ahora.minute < 15)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Corrida del sistema de alertas técnicas")
     ap.add_argument("--enviar", action="store_true", help="mandar a Telegram (sin esto: simulación)")
@@ -60,6 +72,7 @@ def main():
     ap.add_argument("--estado", help="ruta del archivo de estado (default: data/enviados.json)")
     ap.add_argument("--guardar-estado", action="store_true", help="guardar el estado aunque sea simulación")
     ap.add_argument("--forzar-resumen", action="store_true", help="mandar el resumen aunque no sea la hora")
+    ap.add_argument("--ignorar-horario", action="store_true", help="correr aunque sea fuera de HORARIO_ALERTAS")
     args = ap.parse_args()
 
     if args.enviar and not C.TELEGRAM_CHAT_ID:
@@ -67,6 +80,10 @@ def main():
 
     inicio = time.time()
     ahora = datetime.now(ZoneInfo(C.ZONA_HORARIA))
+    if not args.ignorar_horario and not dentro_de_horario(ahora):
+        print(f"Fuera de horario ({ahora:%H:%M} en Madrid; se corre de {C.HORARIO_ALERTAS[0]:02d}:00 "
+              f"a {C.HORARIO_ALERTAS[1]:02d}:00). No hago nada.")
+        return
     ruta = args.estado or RUTA_ESTADO
     guardar = args.enviar or args.guardar_estado
     est = E.cargar(ruta)

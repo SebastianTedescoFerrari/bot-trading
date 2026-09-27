@@ -4,6 +4,12 @@ config/secreto.py
 # ZIP de despliegue (puede llevar secretos adentro; no subir)
 *.zip
 
+# Estado del sistema de alertas: en la nube vive en la rama "estado-alertas", no en main
+data/
+
+# Documento de diseño personal (menciona cartera y datos personales; el repo es público)
+sistema-alertas-diseno.md
+
 # Python
 __pycache__/
 *.pyc

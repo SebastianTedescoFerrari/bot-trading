@@ -1,0 +1,70 @@
+# Sistema de alertas técnicas: corre alertas.py cada 30 min.
+# El estado (data/enviados.json) vive en la rama "estado-alertas", NO en main:
+# así las corridas no disparan un redeploy del bot en Render (que sigue main).
+name: Alertas técnicas
+
+on:
+  schedule:
+    # 05:00–22:30 UTC cubre 07:00–23:00 en Madrid todo el año (verano UTC+2, invierno UTC+1).
+    # alertas.py descarta lo que cae fuera de 07:00–23:00 hora de Madrid.
+    - cron: "*/30 5-22 * * *"
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: "simulacion = solo muestra en el log · enviar = manda a Telegram"
+        type: choice
+        options: [simulacion, enviar]
+        default: simulacion
+
+concurrency:
+  group: alertas
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  alertas:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Código (main)
+        uses: actions/checkout@v4
+
+      - name: Estado (rama estado-alertas)
+        uses: actions/checkout@v4
+        with:
+          ref: estado-alertas
+          path: _estado
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Correr alertas
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_TOKEN" ] || [ -z "$TELEGRAM_CHAT_ID" ]; then
+            echo "::notice::Faltan los secrets TELEGRAM_TOKEN / TELEGRAM_CHAT_ID. No se corre."
+            exit 0
+          fi
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            EXTRA="--ignorar-horario"
+            [ "${{ inputs.modo }}" = "enviar" ] && EXTRA="$EXTRA --enviar"
+          else
+            EXTRA="--enviar"
+          fi
+          python alertas.py --estado _estado/enviados.json $EXTRA
+
+      - name: Guardar estado
+        working-directory: _estado
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet || { git commit -q -m "estado $(date -u +%Y-%m-%dT%H:%MZ)" && git push -q; }
