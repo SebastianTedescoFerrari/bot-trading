@@ -6,7 +6,7 @@ Comandos:
   /revisar         → corre TODA la watchlist y manda un reporte por activo
   /revisar GRUPO   → corre solo un grupo (us / arg / cripto)
   /TICKER          → análisis completo de un activo (ej: /baba, /nvda, /btc)
-  /TICKER HORIZONTE→ mismo análisis en otro horizonte (ej: /nvda semanal, /nvda 1h)
+  /TICKER HORIZONTE→ mismo análisis en otro horizonte (ej: /nvda semanal, /nvda 4h, /nvda 1h)
 
 Cómo funciona:
   - Vos le mandás el comando por Telegram.
@@ -51,7 +51,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "   ej: /revisar us, /revisar arg, /revisar cripto\n"
         "• /TICKER — análisis de un activo (ej: /baba, /nvda, /btc)\n"
         "• /TICKER horizonte — mismo análisis en otro horizonte:\n"
-        "   /nvda semanal, /nvda 1h\n\n"
+        "   /nvda semanal, /nvda 4h, /nvda 1h\n\n"
         "Te muestro valuación y técnico por separado. "
         "Nunca es recomendación: la decisión final es tuya."
     )

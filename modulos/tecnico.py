@@ -65,16 +65,21 @@ def normalizar_ticker(ticker):
 # "period" es cuánto historial se baja: tiene que alcanzar para que la EMA200 converja
 # y dé igual que en TradingView (con 1 año de diario quedaba ~1% corrida). Fibonacci,
 # divergencias, volumen y fase usan solo las últimas N velas, así que no cambian.
+# "4h" no existe en yfinance: se arma agrupando velas de 1h ("resample"). 1h y 4h usan
+# la misma descarga (720 días, el máximo que da Yahoo para intradía), que queda en caché.
 TIMEFRAMES = {
-    "diario":  {"period": "5y",  "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)", "unidad": "día"},
-    "semanal": {"period": "max", "interval": "1wk", "fib_barras": 52,  "nombre": "Semanal (1 año)", "unidad": "semana"},
-    "1h":      {"period": "6mo", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)", "unidad": "hora"},
+    "diario":  {"period": "5y",   "interval": "1d",  "fib_barras": 126, "nombre": "Diario (6 meses)", "unidad": "día"},
+    "semanal": {"period": "max",  "interval": "1wk", "fib_barras": 52,  "nombre": "Semanal (1 año)", "unidad": "semana"},
+    "4h":      {"period": "720d", "interval": "60m", "fib_barras": 90,  "nombre": "4 horas", "unidad": "vela de 4h",
+                "resample": "4h"},
+    "1h":      {"period": "720d", "interval": "60m", "fib_barras": 60,  "nombre": "Intradía 1h (~10 ruedas)", "unidad": "hora"},
 }
 
 # Alias que puede escribir el usuario en Telegram -> clave de TIMEFRAMES.
 ALIAS_TIMEFRAME = {
     "diario": "diario", "1d": "diario", "d": "diario",
     "semanal": "semanal", "semana": "semanal", "1w": "semanal", "1wk": "semanal", "w": "semanal",
+    "4h": "4h", "4hs": "4h", "4horas": "4h",
     "1h": "1h", "h": "1h", "hora": "1h", "intradia": "1h", "intradía": "1h",
 }
 
@@ -173,23 +178,43 @@ def ema_tv(serie, n):
     SMA de las primeras n velas y después aplica la fórmula recursiva (alpha = 2/(n+1)).
     La ewm de pandas arranca desde la primera vela y, con poco historial, la EMA200
     quedaba ~1% distinta de la que ves en TradingView.
+
+    Tolera valores vacíos al principio (ej: la línea de señal del MACD es una EMA del
+    MACD, que arranca vacío): la SMA inicial se toma desde el primer valor válido.
     """
     vals = serie.to_numpy(dtype=float)
     out = np.full(len(vals), np.nan)
-    if len(vals) >= n:
+    validos = np.flatnonzero(~np.isnan(vals))
+    if len(validos) == 0:
+        return pd.Series(out, index=serie.index)
+    inicio = validos[0]
+    semilla = inicio + n - 1
+    if semilla < len(vals):
         alpha = 2 / (n + 1)
-        out[n - 1] = vals[:n].mean()
-        for i in range(n, len(vals)):
-            out[i] = alpha * vals[i] + (1 - alpha) * out[i - 1]
+        out[semilla] = np.nanmean(vals[inicio:semilla + 1])
+        for i in range(semilla + 1, len(vals)):
+            v = vals[i]
+            out[i] = out[i - 1] if np.isnan(v) else alpha * v + (1 - alpha) * out[i - 1]
     return pd.Series(out, index=serie.index)
 
 
+def _pendiente(serie_ema, velas=5, umbral=0.05):
+    """Hacia dónde apunta una media: % de cambio en las últimas 'velas' (subiendo/bajando/plana)."""
+    s = serie_ema.dropna()
+    if len(s) <= velas:
+        return {"pct": None, "direccion": "indefinida"}
+    pct = (float(s.iloc[-1]) / float(s.iloc[-1 - velas]) - 1) * 100
+    direccion = "subiendo" if pct > umbral else ("bajando" if pct < -umbral else "plana")
+    return {"pct": round(pct, 2), "direccion": direccion}
+
+
 def calcular_medias(df):
-    """EMA 20/50/200 y lectura de dónde está el precio respecto a ellas."""
+    """EMA 20/50/200, posición del precio respecto a ellas y pendiente de cada una."""
     precio = float(df["Close"].iloc[-1])
-    ema20 = float(ema_tv(df["Close"], 20).iloc[-1])
-    ema50 = float(ema_tv(df["Close"], 50).iloc[-1])
-    ema200 = float(ema_tv(df["Close"], 200).iloc[-1])
+    series = {n: ema_tv(df["Close"], n) for n in (20, 50, 200)}
+    ema20 = float(series[20].iloc[-1])
+    ema50 = float(series[50].iloc[-1])
+    ema200 = float(series[200].iloc[-1])
 
     sobre = [n for n, e in [("EMA20", ema20), ("EMA50", ema50), ("EMA200", ema200)] if precio >= e]
     bajo = [n for n, e in [("EMA20", ema20), ("EMA50", ema50), ("EMA200", ema200)] if precio < e]
@@ -205,6 +230,7 @@ def calcular_medias(df):
     return {
         "precio": round(precio, 2),
         "ema20": round(ema20, 2), "ema50": round(ema50, 2), "ema200": round(ema200, 2),
+        "pendientes": {f"ema{n}": _pendiente(s) for n, s in series.items()},
         "texto": texto,
     }
 
@@ -231,20 +257,40 @@ def calcular_fibonacci(df, barras=126):
         "1.0 (mín)": minimo,
     }
 
-    # Nivel de soporte (el más cercano por debajo) y resistencia (el más cercano por encima)
-    soporte = max([v for v in niveles.values() if v <= precio], default=minimo)
-    resistencia = min([v for v in niveles.values() if v >= precio], default=maximo)
+    # Extensiones: próximos objetivos si el precio sale del rango por arriba o por abajo.
+    extensiones = {
+        "ext 1.272": maximo + 0.272 * rango,
+        "ext 1.618": maximo + 0.618 * rango,
+        "ext 1.272↓": minimo - 0.272 * rango,
+        "ext 1.618↓": minimo - 0.618 * rango,
+    }
+    extensiones = {k: v for k, v in extensiones.items() if v > 0}
 
     def nombre_de(valor):
         return min(niveles.items(), key=lambda kv: abs(kv[1] - valor))[0]
 
+    # Nivel de soporte (el más cercano por debajo) y resistencia (el más cercano por encima).
+    # Si el precio está en el máximo del rango (rompiendo), el techo ya no es ese máximo
+    # sino la extensión 1.272; igual con el mínimo hacia abajo.
+    if rango > 0 and precio >= maximo * 0.997 and "ext 1.272" in extensiones:
+        resistencia, res_nombre = extensiones["ext 1.272"], "ext 1.272"
+    else:
+        resistencia = min([v for v in niveles.values() if v >= precio], default=maximo)
+        res_nombre = nombre_de(resistencia)
+    if rango > 0 and precio <= minimo * 1.003 and "ext 1.272↓" in extensiones:
+        soporte, sop_nombre = extensiones["ext 1.272↓"], "ext 1.272↓"
+    else:
+        soporte = max([v for v in niveles.values() if v <= precio], default=minimo)
+        sop_nombre = nombre_de(soporte)
+
     return {
         "maximo": round(maximo, 2), "minimo": round(minimo, 2),
         "niveles": {k: round(v, 2) for k, v in niveles.items()},
-        "soporte": round(soporte, 2), "soporte_nombre": nombre_de(soporte),
-        "resistencia": round(resistencia, 2), "resistencia_nombre": nombre_de(resistencia),
-        "texto": f"Entre {nombre_de(soporte)} (${round(soporte,2)}) y "
-                 f"{nombre_de(resistencia)} (${round(resistencia,2)}).",
+        "extensiones": {k: round(v, 2) for k, v in extensiones.items()},
+        "soporte": round(soporte, 2), "soporte_nombre": sop_nombre,
+        "resistencia": round(resistencia, 2), "resistencia_nombre": res_nombre,
+        "texto": f"Entre {sop_nombre} (${round(soporte,2)}) y "
+                 f"{res_nombre} (${round(resistencia,2)}).",
     }
 
 
@@ -301,6 +347,31 @@ def detectar_divergencias(df, periodo_rsi=14, ventana=60, orden=5):
     return resultado
 
 
+def vela_en_curso(df, unidad):
+    """
+    ¿La última vela todavía se está formando? (su período no terminó).
+    Las alertas se evalúan solo sobre velas cerradas: una vela en curso cambia
+    hasta el cierre y puede dar señales falsas (ej: el "0.0x" de volumen).
+    """
+    idx = df.index
+    ahora = pd.Timestamp.now(tz=idx.tz) if getattr(idx, "tz", None) is not None else pd.Timestamp.now()
+    ult = idx[-1]
+    if unidad == "día":
+        return ult.date() == ahora.date()
+    if unidad == "semana":
+        return ult.strftime("%G-%V") == ahora.strftime("%G-%V")
+    if unidad == "hora":
+        return ult.floor("h") == ahora.floor("h")
+    if unidad == "vela de 4h":
+        return ahora < ult + pd.Timedelta(hours=4)
+    return False
+
+
+def solo_velas_cerradas(df, unidad):
+    """Devuelve el DataFrame sin la última vela si todavía está en curso."""
+    return df.iloc[:-1] if len(df) > 1 and vela_en_curso(df, unidad) else df
+
+
 def calcular_volumen_relativo(df, unidad="día", ventana=20):
     """
     Volumen de la última vela COMPLETA comparado con el promedio de las anteriores.
@@ -318,18 +389,7 @@ def calcular_volumen_relativo(df, unidad="día", ventana=20):
         return {"ratio": None, "estado": "sin_datos",
                 "texto": "Volumen no disponible para este activo."}
 
-    idx = df.index
-    ahora = pd.Timestamp.now(tz=idx.tz) if getattr(idx, "tz", None) is not None else pd.Timestamp.now()
-    ult = idx[-1]
-    if unidad == "día":
-        en_curso = ult.date() == ahora.date()
-    elif unidad == "semana":
-        en_curso = ult.strftime("%G-%V") == ahora.strftime("%G-%V")
-    elif unidad == "hora":
-        en_curso = ult.floor("h") == ahora.floor("h")
-    else:
-        en_curso = False
-    if en_curso or float(vols.iloc[-1]) == 0:
+    if vela_en_curso(df, unidad) or float(vols.iloc[-1]) == 0:
         vols = vols.iloc[:-1]   # descartar la vela en curso / vacía
 
     if len(vols) < ventana + 1:
@@ -590,6 +650,159 @@ def detectar_cruce_medias(df, rapida=50, lenta=200, ventana=10):
     return {"cruce": cruce, "texto": texto}
 
 
+def a_4h(df_1h, es_cripto):
+    """
+    Arma velas de 4 horas agrupando velas de 1h, alineadas como TradingView:
+      - Cripto (24/7): bloques desde las 00:00 UTC (00-04, 04-08, ...).
+      - Acciones: bloques desde la apertura de cada rueda (09:30-13:30 y 13:30-16:00 en EE.UU.).
+    """
+    agregacion = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
+    agregacion = {c: f for c, f in agregacion.items() if c in df_1h.columns}
+    if es_cripto:
+        d = df_1h.tz_convert("UTC") if df_1h.index.tz is not None else df_1h.tz_localize("UTC")
+        velas = d.resample("4h", origin="start_day").agg(agregacion)
+    else:
+        fechas = df_1h.index.date
+        bloque = df_1h.groupby(fechas).cumcount().to_numpy() // 4
+        inicio = pd.Series(df_1h.index, index=df_1h.index).groupby([fechas, bloque]).transform("first")
+        velas = df_1h.groupby(pd.DatetimeIndex(inicio)).agg(agregacion)
+    return velas.dropna(subset=["Close"])
+
+
+def calcular_macd(df, rapida=12, lenta=26, senal=9, ventana_cruce=3):
+    """
+    MACD (12, 26, 9) calculado como TradingView: línea MACD = EMA12 − EMA26, señal = EMA9
+    del MACD, histograma = MACD − señal. Detecta si hubo cruce en las últimas velas.
+    """
+    close = df["Close"]
+    macd = ema_tv(close, rapida) - ema_tv(close, lenta)
+    senal_s = ema_tv(macd, senal)
+    hist = macd - senal_s
+    if hist.dropna().empty:
+        return {"macd": None, "senal": None, "hist": None, "cruce": None, "texto": "MACD sin datos suficientes."}
+
+    m, s = float(macd.iloc[-1]), float(senal_s.iloc[-1])
+    h = hist.dropna()
+    h_act, h_prev = float(h.iloc[-1]), float(h.iloc[-2]) if len(h) > 1 else float(h.iloc[-1])
+
+    # Cruce de la línea MACD con su señal en las últimas 'ventana_cruce' velas
+    signo = np.sign(h.tail(ventana_cruce + 1).to_numpy())
+    cruce, hace = None, None
+    for i in range(1, len(signo)):
+        if signo[i - 1] <= 0 < signo[i]:
+            cruce, hace = "alcista", len(signo) - 1 - i
+        elif signo[i - 1] >= 0 > signo[i]:
+            cruce, hace = "bajista", len(signo) - 1 - i
+
+    impulso = "ganando fuerza" if abs(h_act) > abs(h_prev) else "perdiendo fuerza"
+    if cruce:
+        cuando = "en la última vela" if hace == 0 else f"hace {hace} vela{'s' if hace > 1 else ''}"
+        texto = (f"MACD: cruce {cruce} {cuando} (la línea MACD cruzó su señal "
+                 f"{'hacia arriba' if cruce == 'alcista' else 'hacia abajo'}).")
+    else:
+        texto = (f"MACD {'positivo' if m > s else 'negativo'} ({'sobre' if m > s else 'bajo'} su señal, "
+                 f"{'sobre' if m > 0 else 'bajo'} cero) — impulso {impulso}.")
+    return {"macd": round(m, 4), "senal": round(s, 4), "hist": round(h_act, 4),
+            "positivo": m > s, "sobre_cero": m > 0, "impulso": impulso,
+            "cruce": cruce, "cruce_hace": hace, "texto": texto}
+
+
+def calcular_obv(df, ventana=20):
+    """
+    OBV (On-Balance Volume): suma el volumen de las velas que suben y resta el de las que
+    bajan. Si el OBV acompaña al precio, el volumen confirma la tendencia; si va en contra,
+    el movimiento no tiene respaldo.
+    """
+    close, vol = df["Close"], df["Volume"].fillna(0)
+    obv = (np.sign(close.diff()).fillna(0) * vol).cumsum()
+    if len(obv) <= ventana:
+        return {"tendencia": "indefinida", "confirma": None, "texto": "OBV sin datos suficientes."}
+
+    cambio_obv = float(obv.iloc[-1] - obv.iloc[-1 - ventana])
+    cambio_precio = float(close.iloc[-1] - close.iloc[-1 - ventana])
+    volumen_ventana = float(vol.tail(ventana).sum()) or 1.0
+    if abs(cambio_obv) < 0.1 * volumen_ventana:
+        tend_obv = "plano"
+    else:
+        tend_obv = "sube" if cambio_obv > 0 else "baja"
+    tend_precio = "sube" if cambio_precio > 0 else "baja"
+
+    if tend_obv == "plano":
+        confirma, texto = None, "OBV plano — el volumen no se inclina para ningún lado."
+    elif tend_obv == tend_precio:
+        confirma = True
+        texto = f"OBV {tend_obv} junto con el precio — el volumen confirma la tendencia."
+    else:
+        confirma = False
+        texto = (f"OBV {tend_obv} mientras el precio {tend_precio} — el movimiento no tiene "
+                 f"respaldo de volumen (ojo).")
+    return {"tendencia": tend_obv, "confirma": confirma, "texto": texto}
+
+
+def _pivotes(valores, orden, tipo):
+    """Índices de máximos (tipo='max') o mínimos (tipo='min') locales con 'orden' velas a cada lado."""
+    idx = []
+    for i in range(orden, len(valores) - orden):
+        ventana = valores[i - orden:i + orden + 1]
+        if (tipo == "max" and valores[i] == ventana.max()) or (tipo == "min" and valores[i] == ventana.min()):
+            idx.append(i)
+    return idx
+
+
+def detectar_estructura(df, ventana=120, orden=5):
+    """
+    Estructura de máximos y mínimos (los dos últimos swings):
+      - HH/HL (máximos y mínimos más altos) = tendencia alcista.
+      - LH/LL (máximos y mínimos más bajos) = tendencia bajista.
+      - Mixta = lateral / en transición.
+    """
+    sub = df.tail(ventana)
+    highs, lows = sub["High"].to_numpy(dtype=float), sub["Low"].to_numpy(dtype=float)
+    ph, pl = _pivotes(highs, orden, "max"), _pivotes(lows, orden, "min")
+    if len(ph) < 2 or len(pl) < 2:
+        return {"tipo": "indefinida", "texto": "Estructura sin swings suficientes para leerla."}
+
+    h1, h2 = highs[ph[-2]], highs[ph[-1]]
+    l1, l2 = lows[pl[-2]], lows[pl[-1]]
+    hh, hl = h2 > h1, l2 > l1
+    if hh and hl:
+        tipo, texto = "alcista", "Máximos y mínimos cada vez más altos (HH/HL) — estructura alcista."
+    elif not hh and not hl:
+        tipo, texto = "bajista", "Máximos y mínimos cada vez más bajos (LH/LL) — estructura bajista."
+    elif hh and not hl:
+        tipo, texto = "lateral", "Máximo más alto pero mínimo más bajo — rango que se abre (volatilidad)."
+    else:
+        tipo, texto = "lateral", "Máximo más bajo y mínimo más alto — rango que se comprime (define pronto)."
+    return {"tipo": tipo, "texto": texto,
+            "maximos": (round(h1, 2), round(h2, 2)), "minimos": (round(l1, 2), round(l2, 2))}
+
+
+def calcular_roc(df, periodo=10):
+    """Rate of Change: % de variación contra el cierre de hace 'periodo' velas."""
+    close = df["Close"]
+    if len(close) <= periodo:
+        return None
+    return round((float(close.iloc[-1]) / float(close.iloc[-1 - periodo]) - 1) * 100, 2)
+
+
+def rango_52_semanas(df_diario):
+    """
+    Máximo y mínimo de las 52 semanas previas (sin contar la última vela) y dónde está el
+    precio. Si el cierre supera ese máximo (o perfora el mínimo), es un nuevo récord anual.
+    """
+    if len(df_diario) < 30:
+        return None
+    previo = df_diario.iloc[:-1].tail(252)
+    maximo, minimo = float(previo["High"].max()), float(previo["Low"].min())
+    precio = float(df_diario["Close"].iloc[-1])
+    return {
+        "maximo": round(maximo, 2), "minimo": round(minimo, 2),
+        "dist_max_pct": round((precio - maximo) / maximo * 100, 1),
+        "dist_min_pct": round((precio - minimo) / minimo * 100, 1),
+        "nuevo_maximo": precio > maximo, "nuevo_minimo": precio < minimo,
+    }
+
+
 def detectar_fase(df, ventana=30):
     """
     Detecta la FASE reciente del precio en las últimas 'ventana' velas:
@@ -616,8 +829,10 @@ def detectar_fase(df, ventana=30):
 def analisis_tecnico_completo(ticker, timeframe=None):
     """Junta todo el análisis técnico de un ticker en un solo diccionario."""
     ticker_yf, es_cripto = normalizar_ticker(ticker)
-    _, cfg = resolver_timeframe(timeframe)
+    clave_tf, cfg = resolver_timeframe(timeframe)
     df = bajar_datos(ticker_yf, periodo=cfg["period"], intervalo=cfg["interval"])
+    if cfg.get("resample") == "4h":
+        df = a_4h(df, es_cripto)
     rsi = calcular_rsi(df)
     precio = round(float(df["Close"].iloc[-1]), 2)
     rsi_ctx = contexto_rsi(rsi)
@@ -640,18 +855,59 @@ def analisis_tecnico_completo(ticker, timeframe=None):
         "ticker_yf": ticker_yf,
         "es_cripto": es_cripto,
         "precio": precio,
+        "timeframe": clave_tf,
         "timeframe_nombre": cfg["nombre"],
         "timeframe_unidad": cfg["unidad"],
+        "vela_en_curso": vela_en_curso(df, cfg["unidad"]),
         "rsi": rsi_ctx,
         "medias": medias,
         "fibonacci": fibonacci,
         "divergencias": divergencias,
         "volumen": volumen,
         "atr": atr,
+        "macd": calcular_macd(df),
+        "obv": calcular_obv(df),
+        "estructura": detectar_estructura(df),
+        "roc": calcular_roc(df),
         "escenarios": escenarios,
         "cruce": cruce,
         "fase": detectar_fase(df),
         "ath": distancia_maximo_historico(df_diario),
+        "rango_52s": rango_52_semanas(df_diario),
         "variacion": calcular_variacion_plazos(df_diario),
         "semaforo": semaforo,
     }
+
+
+def resumen_timeframe(ticker, timeframe):
+    """
+    Lectura corta de un timeframe, para mostrar el contexto de los tres marcos en las
+    alertas (ej: "alcista (sobre EMA20/50/200) · HH/HL · RSI 55 · MACD positivo").
+    """
+    tec = analisis_tecnico_completo(ticker, timeframe)
+    m, precio = tec["medias"], tec["precio"]
+    sobre = [n for n in ("20", "50", "200") if precio >= m[f"ema{n}"]]
+    if len(sobre) == 3:
+        tendencia = "alcista (sobre EMA20/50/200)"
+    elif not sobre:
+        tendencia = "bajista (bajo EMA20/50/200)"
+    else:
+        tendencia = f"mixta (sobre EMA{'/'.join(sobre)})"
+
+    partes = [tendencia]
+    est = tec["estructura"]["tipo"]
+    if est in ("alcista", "bajista"):
+        partes.append("HH/HL" if est == "alcista" else "LH/LL")
+    partes.append(f"RSI {round(tec['rsi']['valor'])}")
+    macd = tec["macd"]
+    if macd.get("cruce"):
+        partes.append(f"cruce MACD {macd['cruce']}")
+    elif macd.get("macd") is not None:
+        partes.append(f"MACD {'positivo' if macd['positivo'] else 'negativo'}, {macd['impulso']}")
+    return {"timeframe": timeframe, "nombre": tec["timeframe_nombre"], "semaforo": tec["semaforo"],
+            "tecnico": tec, "texto": " · ".join(partes)}
+
+
+def analisis_multitimeframe(ticker, marcos=("diario", "semanal", "4h")):
+    """Resumen de los tres marcos del sistema de alertas (diario manda; semanal y 4h dan contexto)."""
+    return {tf: resumen_timeframe(ticker, tf) for tf in marcos}
