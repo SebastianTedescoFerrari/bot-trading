@@ -12,6 +12,7 @@ Todo el análisis se calcula con datos actuales bajados al momento.
 """
 
 import time
+from functools import lru_cache
 
 import yfinance as yf
 import pandas as pd
@@ -44,16 +45,33 @@ CRIPTOS = {
 }
 
 
+@lru_cache(maxsize=1)
+def alias_alertas():
+    """
+    Tickers de la watchlist de alertas (config.ALERTAS_ACTIVOS) por nombre corto, para que
+    /HSI, /ORO o /US10Y en el bot vayan al símbolo correcto de Yahoo (^HSI, GC=F, ^TNX).
+    """
+    try:
+        from config.config import ALERTAS_ACTIVOS
+    except Exception:
+        return {}
+    return {a["ticker"].upper(): a for a in ALERTAS_ACTIVOS}
+
+
 def normalizar_ticker(ticker):
     """
     Devuelve (ticker_yfinance, es_cripto).
 
+    - Ticker de la watchlist de alertas con símbolo distinto en Yahoo (HSI -> ^HSI, ORO -> GC=F).
     - Cripto conocida (BTC, ETH, ...) -> le agrega '-USD' para que yfinance
       baje la cotización real en dólares.
     - Si ya viene con '-USD' (ej: BTC-USD), se respeta y se marca como cripto.
     - Cualquier otro ticker (acciones) se deja igual.
     """
     t = ticker.strip().upper()
+    alias = alias_alertas().get(t)
+    if alias and alias["yf"].upper() != t:
+        return alias["yf"], alias["tipo"] == "cripto"
     if t.endswith("-USD"):
         return t, True
     if t in CRIPTOS:
@@ -136,8 +154,8 @@ def bajar_datos(ticker, periodo="1y", intervalo="1d"):
     raise ultimo_error if ultimo_error else ValueError(f"No se pudieron bajar datos de {ticker}")
 
 
-def calcular_rsi(df, periodo=14):
-    """RSI clásico de Wilder. Devuelve el valor actual redondeado."""
+def serie_rsi(df, periodo=14):
+    """Serie completa del RSI clásico de Wilder (sirve para detectar cruces de 30/70)."""
     delta = df["Close"].diff()
     ganancia = delta.where(delta > 0, 0.0)
     perdida = -delta.where(delta < 0, 0.0)
@@ -145,8 +163,12 @@ def calcular_rsi(df, periodo=14):
     avg_gan = ganancia.ewm(alpha=1/periodo, adjust=False).mean()
     avg_per = perdida.ewm(alpha=1/periodo, adjust=False).mean()
     rs = avg_gan / avg_per
-    rsi = 100 - (100 / (1 + rs))
-    return round(float(rsi.iloc[-1]), 1)
+    return 100 - (100 / (1 + rs))
+
+
+def calcular_rsi(df, periodo=14):
+    """RSI clásico de Wilder. Devuelve el valor actual redondeado."""
+    return round(float(serie_rsi(df, periodo).iloc[-1]), 1)
 
 
 def contexto_rsi(rsi):
@@ -653,12 +675,15 @@ def detectar_cruce_medias(df, rapida=50, lenta=200, ventana=10):
 def a_4h(df_1h, es_cripto):
     """
     Arma velas de 4 horas agrupando velas de 1h, alineadas como TradingView:
-      - Cripto (24/7): bloques desde las 00:00 UTC (00-04, 04-08, ...).
-      - Acciones: bloques desde la apertura de cada rueda (09:30-13:30 y 13:30-16:00 en EE.UU.).
+      - Mercados de 24 h (cripto, y futuros/dólar que operan casi todo el día):
+        bloques de reloj desde las 00:00 UTC (00-04, 04-08, ...).
+      - Acciones e índices: bloques desde la apertura de cada rueda
+        (09:30-13:30 y 13:30-16:00 en EE.UU.).
     """
     agregacion = {"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"}
     agregacion = {c: f for c, f in agregacion.items() if c in df_1h.columns}
-    if es_cripto:
+    velas_por_dia = df_1h.groupby(df_1h.index.date).size().median() if len(df_1h) else 0
+    if es_cripto or velas_por_dia > 8:
         d = df_1h.tz_convert("UTC") if df_1h.index.tz is not None else df_1h.tz_localize("UTC")
         velas = d.resample("4h", origin="start_day").agg(agregacion)
     else:
@@ -826,13 +851,19 @@ def detectar_fase(df, ventana=30):
     return {"fase": fase, "cambio_pct": round(cambio, 1)}
 
 
-def analisis_tecnico_completo(ticker, timeframe=None):
-    """Junta todo el análisis técnico de un ticker en un solo diccionario."""
+def analisis_tecnico_completo(ticker, timeframe=None, solo_cerradas=False):
+    """
+    Junta todo el análisis técnico de un ticker en un solo diccionario.
+    solo_cerradas=True descarta la vela en curso (lo usan las alertas, que se evalúan
+    sobre velas cerradas); el reporte de /TICKER usa el precio más reciente.
+    """
     ticker_yf, es_cripto = normalizar_ticker(ticker)
     clave_tf, cfg = resolver_timeframe(timeframe)
     df = bajar_datos(ticker_yf, periodo=cfg["period"], intervalo=cfg["interval"])
     if cfg.get("resample") == "4h":
         df = a_4h(df, es_cripto)
+    if solo_cerradas:
+        df = solo_velas_cerradas(df, cfg["unidad"])
     rsi = calcular_rsi(df)
     precio = round(float(df["Close"].iloc[-1]), 2)
     rsi_ctx = contexto_rsi(rsi)
@@ -849,6 +880,8 @@ def analisis_tecnico_completo(ticker, timeframe=None):
 
     # Datos diarios (todo el historial) una sola vez: sirven para ATH y para momentum.
     df_diario = bajar_datos(ticker_yf, periodo="max", intervalo="1d")
+    if solo_cerradas:
+        df_diario = solo_velas_cerradas(df_diario, "día")
 
     return {
         "ticker": ticker.strip().upper(),
@@ -879,12 +912,12 @@ def analisis_tecnico_completo(ticker, timeframe=None):
     }
 
 
-def resumen_timeframe(ticker, timeframe):
+def resumen_timeframe(ticker, timeframe, solo_cerradas=False):
     """
     Lectura corta de un timeframe, para mostrar el contexto de los tres marcos en las
     alertas (ej: "alcista (sobre EMA20/50/200) · HH/HL · RSI 55 · MACD positivo").
     """
-    tec = analisis_tecnico_completo(ticker, timeframe)
+    tec = analisis_tecnico_completo(ticker, timeframe, solo_cerradas=solo_cerradas)
     m, precio = tec["medias"], tec["precio"]
     sobre = [n for n in ("20", "50", "200") if precio >= m[f"ema{n}"]]
     if len(sobre) == 3:
@@ -908,6 +941,6 @@ def resumen_timeframe(ticker, timeframe):
             "tecnico": tec, "texto": " · ".join(partes)}
 
 
-def analisis_multitimeframe(ticker, marcos=("diario", "semanal", "4h")):
+def analisis_multitimeframe(ticker, marcos=("diario", "semanal", "4h"), solo_cerradas=False):
     """Resumen de los tres marcos del sistema de alertas (diario manda; semanal y 4h dan contexto)."""
-    return {tf: resumen_timeframe(ticker, tf) for tf in marcos}
+    return {tf: resumen_timeframe(ticker, tf, solo_cerradas) for tf in marcos}

@@ -7,8 +7,13 @@ factor se acompaña de su explicación en criollo. Valuación y técnico van
 separados. Formato con secciones claras y un bloque de niveles como tabla.
 """
 
-from modulos.tecnico import analisis_tecnico_completo
+from modulos.tecnico import alias_alertas, analisis_tecnico_completo
 from modulos.valuacion import evaluar_valuacion, nombre_fmp
+
+# Tipos de activo sin fundamentales (P/E, analistas): se leen por zona de precio, como cripto.
+_SIN_FUNDAMENTALES = {"cripto", "indice", "fx", "tasa", "materia_prima", "volatilidad"}
+_NOMBRE_TIPO = {"cripto": "cripto", "indice": "índice", "fx": "moneda", "tasa": "tasa",
+                "materia_prima": "materia prima", "volatilidad": "índice de volatilidad"}
 
 EMOJI = {"verde": "🟢", "amarillo": "🟡", "rojo": "🔴"}
 
@@ -25,10 +30,19 @@ NOMBRES_CRIPTO = {
 
 
 def _nombre_activo(tec):
-    """Nombre del activo: dict para cripto, FMP profile para acciones/ADRs."""
+    """Nombre del activo: dict para cripto, FMP profile para acciones/ADRs, watchlist de alertas si no hay otro."""
     if tec["es_cripto"]:
         return NOMBRES_CRIPTO.get(tec["ticker"])
-    return nombre_fmp(tec["ticker_yf"])
+    alias = alias_alertas().get(tec["ticker"])
+    return nombre_fmp(tec["ticker_yf"]) or (alias["nombre"] if alias else None)
+
+
+def _tipo_activo(tec):
+    """Tipo según la watchlist de alertas (índice, moneda, etc.); None si es una acción común."""
+    if tec["es_cripto"]:
+        return "cripto"
+    alias = alias_alertas().get(tec["ticker"])
+    return alias["tipo"] if alias else None
 
 
 def _voto_emoji(signo):
@@ -317,9 +331,10 @@ def armar_reporte(ticker, timeframe=None):
     L.append("")
     zona = _zona_ath_texto(tec["ath"])
     fase = tec["fase"]["fase"]
-    if tec["es_cripto"]:
-        # Cripto no tiene P/E; la lectura de "barato/caro" es por distancia al máximo.
-        L.append("💰 *Zona de precio* (cripto, sin fundamentales)")
+    tipo = _tipo_activo(tec)
+    if tipo in _SIN_FUNDAMENTALES:
+        # Sin P/E ni analistas; la lectura de "barato/caro" es por distancia al máximo.
+        L.append(f"💰 *Zona de precio* ({_NOMBRE_TIPO[tipo]}, sin fundamentales)")
         if zona:
             L.append(f"📉 {zona}")
             L.append(_fase_acumulacion_texto(fase))
