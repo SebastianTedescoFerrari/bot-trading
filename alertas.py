@@ -7,7 +7,8 @@ La ejecuta GitHub Actions cada 30 min (07:00–23:00, hora de Madrid). En cada c
      detalle completo; lo demás va al resumen compacto de las 08:00.
   2. NOTICIAS: junta las fuentes RSS, Gemini elige las relevantes (economía, política y
      geopolítica) y explica qué pasa y sus consecuencias. Las urgentes salen ya; el resto
-     va a la tanda de las 08:00. Con NOTICIAS_MODO = "log" solo se muestran en el registro.
+     va a la próxima tanda (NOTICIAS_HORAS_TANDA: 08:00 y 20:00). Con NOTICIAS_MODO = "log"
+     solo se muestran en el registro.
 
 Uso:
   python alertas.py                      SIMULACIÓN: muestra qué mandaría. No envía ni guarda nada.
@@ -38,7 +39,7 @@ from modulos.noticias import recolectar
 from modulos.senales import detectar_senales
 from modulos.tecnico import analisis_multitimeframe
 
-_MAX_NOTICIAS_URGENTES = 5   # por corrida: si hay más, las siguientes van a la tanda de las 08:00
+_MAX_NOTICIAS_URGENTES = 5   # por corrida: si hay más, las siguientes van a la próxima tanda
 
 RUTA_ESTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "enviados.json")
 
@@ -114,7 +115,7 @@ def correr_noticias(est, ahora, despachar, imprimir_encoladas, forzar=False):
             stats["urgentes"] += 1
         else:
             if imprimir_encoladas:
-                print(f"\n----- [noticia — va a la tanda de las {C.HORA_RESUMEN:02d}:00] -----\n{texto}")
+                print(f"\n----- [noticia — va a la próxima tanda de noticias] -----\n{texto}")
             est["cola_noticias"].append({"id": nota["id"], "titulo": a["titulo"], "medio": nota["medio"],
                                          "link": nota["link"], "importancia": a["importancia"], "mensaje": texto})
             stats["encoladas"] += 1
@@ -135,11 +136,12 @@ def tanda_noticias(est, ahora, despachar, forzar):
         est["ultimo_resumen_noticias"] = turno
         return
     completas, resto = cola[:C.NOTICIAS_MAX_RESUMEN], cola[C.NOTICIAS_MAX_RESUMEN:]
+    etiqueta = f"NOTICIAS {int(turno.split('@')[1]):02d}:00"
     ok = despachar(f"🗞️ Noticias destacadas · {len(completas)} de {len(cola)} (de mayor a menor importancia)",
-                   "NOTICIAS 08:00 — cabecera")
-    ok = ok and all(despachar(x["mensaje"], "NOTICIAS 08:00") for x in completas)
+                   f"{etiqueta} — cabecera")
+    ok = ok and all(despachar(x["mensaje"], etiqueta) for x in completas)
     if ok and resto:
-        ok = all(despachar(p, "NOTICIAS 08:00 — otras", es_html=True) for p in otras_noticias(resto))
+        ok = all(despachar(p, f"{etiqueta} — otras", es_html=True) for p in otras_noticias(resto))
     if ok:
         est["cola_noticias"] = []
         est["ultimo_resumen_noticias"] = turno

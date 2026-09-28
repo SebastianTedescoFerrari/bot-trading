@@ -210,7 +210,7 @@ ZONA_HORARIA = "Europe/Madrid"
 NOTICIAS_MODO = "enviar"
 NOTICIAS_HORAS = 9              # solo noticias de las últimas N horas (cubre la noche, cuando no corre)
 NOTICIAS_CADA_MIN = 60          # una pasada de noticias por hora: el plan gratis de Gemini da 20 consultas/día
-NOTICIAS_HORAS_TANDA = [8]      # horarios (Madrid) de la tanda de noticias no urgentes; ej: [8, 20]
+NOTICIAS_HORAS_TANDA = [8, 20]  # horarios (Madrid) de la tanda de noticias no urgentes
 NOTICIAS_MAX_RESUMEN = 8        # tope de noticias completas por tanda
 # Modelos de Gemini en orden de preferencia. Si uno está saturado o ya no existe, se prueba
 # el siguiente; si fallan todos, las noticias esperan a la corrida siguiente.
