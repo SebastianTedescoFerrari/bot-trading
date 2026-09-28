@@ -5,9 +5,11 @@ name: Alertas técnicas
 
 on:
   schedule:
-    # 05:00–22:30 UTC cubre 07:00–23:00 en Madrid todo el año (verano UTC+2, invierno UTC+1).
+    # 05:13–22:43 UTC cubre 07:00–23:00 en Madrid todo el año (verano UTC+2, invierno UTC+1).
     # alertas.py descarta lo que cae fuera de 07:00–23:00 hora de Madrid.
-    - cron: "*/30 5-22 * * *"
+    # Minutos :13 y :43 a propósito: GitHub demora y hasta descarta las tareas programadas en
+    # las horas pico (:00 y :30); con "*/30" corrían 4 de ~36 por día (visto 2026-09-28).
+    - cron: "13,43 5-22 * * *"
   workflow_dispatch:
     inputs:
       modo:
