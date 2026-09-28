@@ -207,7 +207,7 @@ ZONA_HORARIA = "Europe/Madrid"
 # ═════════════════════════════════════════════════════════════
 # "log": las filtra y resume pero solo las muestra en el registro (para calibrar).
 # "enviar": además las manda a Telegram.
-NOTICIAS_MODO = "log"
+NOTICIAS_MODO = "enviar"
 NOTICIAS_HORAS = 9              # solo noticias de las últimas N horas (cubre la noche, cuando no corre)
 NOTICIAS_CADA_MIN = 60          # una pasada de noticias por hora: el plan gratis de Gemini da 20 consultas/día
 NOTICIAS_HORAS_TANDA = [8]      # horarios (Madrid) de la tanda de noticias no urgentes; ej: [8, 20]
