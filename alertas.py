@@ -72,12 +72,20 @@ def dentro_de_horario(ahora):
     return desde <= ahora.hour < hasta or (ahora.hour == hasta and ahora.minute < 15)
 
 
-def correr_noticias(est, ahora, despachar, imprimir_encoladas):
-    """Motor 2: junta noticias, Gemini las filtra y explica, y manda (o encola) las que importan."""
+def correr_noticias(est, ahora, despachar, imprimir_encoladas, forzar=False):
+    """Motor 2: junta noticias, Gemini las elige y explica, y manda (o encola) las que importan."""
     stats = {"nuevas": 0, "elegidas": 0, "urgentes": 0, "encoladas": 0}
     if not C.GEMINI_API_KEY:
         print("[noticias] falta GEMINI_API_KEY: el motor de noticias no corre")
         return stats
+    # El plan gratis de Gemini da 20 consultas por día y por modelo: una pasada por hora como máximo.
+    ultima = est.get("ultima_corrida_noticias")
+    if ultima and not forzar:
+        minutos = (ahora - datetime.fromisoformat(ultima)).total_seconds() / 60
+        if minutos < C.NOTICIAS_CADA_MIN - 10:
+            print(f"[noticias] última pasada hace {minutos:.0f} min: la próxima en la corrida siguiente "
+                  f"(cada {C.NOTICIAS_CADA_MIN} min, para cuidar la cuota gratis de Gemini)")
+            return stats
     notas, descartar = recolectar(C.NOTICIAS_FUENTES, est["noticias_vistas"], C.NOTICIAS_HORAS)
     E.marcar_vistas(est, descartar, ahora)
     stats["nuevas"] = len(notas)
@@ -88,17 +96,15 @@ def correr_noticias(est, ahora, despachar, imprimir_encoladas):
     tickers = {a["ticker"].upper() for a in C.ALERTAS_ACTIVOS}
     try:
         modelos = IA.elegir_modelos(C.GEMINI_API_KEY, C.GEMINI_MODELOS)
-        elegidas = IA.filtrar(notas, [x["titulo"] for x in est["noticias_enviadas"]], watchlist,
-                              C.GEMINI_API_KEY, modelos)
+        analizadas = IA.seleccionar_y_analizar(notas, [x["titulo"] for x in est["noticias_enviadas"]],
+                                               watchlist, tickers, C.GEMINI_API_KEY, modelos)
     except IA.IANoDisponible as e:
         print(f"[noticias] {e}. Quedan para la próxima corrida (nunca se mandan sin filtrar).")
         return stats
-    ids_elegidas = {n["id"] for n, _, _ in elegidas}
-    E.marcar_vistas(est, [n["id"] for n in notas if n["id"] not in ids_elegidas], ahora)   # descartadas
-    analizadas, pendientes = IA.analizar(elegidas, watchlist, tickers, C.GEMINI_API_KEY, modelos)
-    stats["elegidas"] = len(elegidas)
-    print(f"[noticias] {len(notas)} nuevas · {len(elegidas)} elegidas por la IA ({IA.ultimo_modelo}) · "
-          f"{len(analizadas)} analizadas · {len(pendientes)} pendientes para la próxima corrida")
+    E.marcar_vistas(est, [n["id"] for n in notas], ahora)   # todo el lote ya pasó por la IA
+    est["ultima_corrida_noticias"] = ahora.isoformat()
+    stats["elegidas"] = len(analizadas)
+    print(f"[noticias] {len(notas)} nuevas · {len(analizadas)} elegidas y explicadas por {IA.ultimo_modelo}")
 
     for a in sorted(analizadas, key=lambda x: -x["importancia"]):
         nota, texto = a["nota"], mensaje_noticia(a, C.ZONA_HORARIA)
@@ -118,12 +124,15 @@ def correr_noticias(est, ahora, despachar, imprimir_encoladas):
 
 
 def tanda_noticias(est, ahora, despachar, forzar):
-    """A las 08:00: las noticias más importantes completas y el resto en una lista con links."""
-    if not (E.toca_resumen(est, ahora, C.HORA_RESUMEN, "ultimo_resumen_noticias") or forzar):
+    """En cada horario de NOTICIAS_HORAS_TANDA: las más importantes completas y el resto con links."""
+    turno = E.turno_pendiente(est, ahora, C.NOTICIAS_HORAS_TANDA, "ultimo_resumen_noticias")
+    if forzar and not turno:
+        turno = f"{ahora.date().isoformat()}@{ahora.hour}"
+    if not turno:
         return
     cola = sorted(est["cola_noticias"], key=lambda x: -x["importancia"])
     if not cola:
-        E.marcar_resumen(est, ahora, "ultimo_resumen_noticias")
+        est["ultimo_resumen_noticias"] = turno
         return
     completas, resto = cola[:C.NOTICIAS_MAX_RESUMEN], cola[C.NOTICIAS_MAX_RESUMEN:]
     ok = despachar(f"🗞️ Noticias destacadas · {len(completas)} de {len(cola)} (de mayor a menor importancia)",
@@ -133,7 +142,7 @@ def tanda_noticias(est, ahora, despachar, forzar):
         ok = all(despachar(p, "NOTICIAS 08:00 — otras", es_html=True) for p in otras_noticias(resto))
     if ok:
         est["cola_noticias"] = []
-        E.marcar_resumen(est, ahora, "ultimo_resumen_noticias")
+        est["ultimo_resumen_noticias"] = turno
 
 
 def main():
@@ -229,7 +238,8 @@ def main():
     nov = {"nuevas": 0, "elegidas": 0, "urgentes": 0, "encoladas": 0}
     if not args.sin_noticias:
         try:
-            nov = correr_noticias(est, ahora, despachar_noticia, imprimir_encoladas=not enviando_noticias)
+            nov = correr_noticias(est, ahora, despachar_noticia, imprimir_encoladas=not enviando_noticias,
+                                  forzar=args.ignorar_horario or args.solo_noticias)
             tanda_noticias(est, ahora, despachar_noticia, args.forzar_resumen)
         except Exception as e:   # un problema con las noticias no frena lo técnico
             errores.append(f"noticias: {type(e).__name__}: {e}")

@@ -21,6 +21,7 @@ _VACIO = {
     # Noticias: vistas (ya pasaron por el filtro), enviadas (títulos recientes, para no
     # repetir un hecho contado por otro medio), cola para la tanda de las 08:00.
     "noticias_vistas": {}, "noticias_enviadas": [], "cola_noticias": [], "ultimo_resumen_noticias": None,
+    "ultima_corrida_noticias": None,   # para no pasar de una consulta a Gemini por hora
 }
 
 
@@ -79,6 +80,18 @@ def toca_resumen(estado, ahora, hora, clave="ultimo_resumen"):
 
 def marcar_resumen(estado, ahora, clave="ultimo_resumen"):
     estado[clave] = ahora.date().isoformat()
+
+
+def turno_pendiente(estado, ahora, horas, clave):
+    """
+    Para tandas en varios horarios (ej: [8, 20]): si ya pasó alguno hoy y ese turno no se
+    mandó, devuelve su identificador ("2026-09-28@8"); si no, None.
+    """
+    pasados = [h for h in horas if ahora.hour >= h]
+    if not pasados:
+        return None
+    turno = f"{ahora.date().isoformat()}@{max(pasados)}"
+    return None if estado.get(clave) == turno else turno
 
 
 def marcar_vistas(estado, ids, ahora):
