@@ -25,6 +25,14 @@ if not FMP_API_KEY:
     except Exception:
         pass
 
+# Clave de Google Gemini (plan gratis) para filtrar y resumir noticias.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+if not GEMINI_API_KEY:
+    try:
+        from config.secreto import GEMINI_API_KEY  # type: ignore
+    except Exception:
+        pass
+
 # Chat al que el sistema de alertas manda los mensajes (tu chat con el bot).
 # Mismo esquema: variable de entorno en la nube, config/secreto.py en local.
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -192,3 +200,64 @@ ANTISPAM_HORAS = 24              # la misma señal del mismo activo no se repite
 HORA_RESUMEN = 8                 # resumen diario de señales no urgentes (hora de Madrid)
 HORARIO_ALERTAS = (7, 23)        # el sistema solo corre de 07:00 a 23:00 (hora de Madrid)
 ZONA_HORARIA = "Europe/Madrid"
+
+
+# ═════════════════════════════════════════════════════════════
+# MOTOR DE NOTICIAS (modulos/noticias.py + modulos/filtro_ia.py)
+# ═════════════════════════════════════════════════════════════
+# "log": las filtra y resume pero solo las muestra en el registro (para calibrar).
+# "enviar": además las manda a Telegram.
+NOTICIAS_MODO = "log"
+NOTICIAS_HORAS = 9              # solo noticias de las últimas N horas (cubre la noche, cuando no corre)
+NOTICIAS_MAX_RESUMEN = 8        # tope de noticias completas en la tanda de las 08:00
+# Modelos de Gemini en orden de preferencia. Si uno está saturado o ya no existe, se prueba
+# el siguiente; si fallan todos, las noticias esperan a la corrida siguiente.
+# (Verificado 2026-09-28: los 2.5 ya no atienden claves nuevas; 3.6 Flash respondía mientras
+#  3.8/3.7/3.5 estaban saturados, por eso va primero; los Pro no tienen cuota gratis.)
+GEMINI_MODELOS = ["gemini-3.6-flash", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.5-flash",
+                  "gemini-flash-latest", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+
+# Fuentes RSS gratuitas. "medio" es el nombre que aparece en el mensaje.
+# Reuters, AP, El Cronista e iProfesional no tienen RSS público: van por Google News.
+_GN_EN = "https://news.google.com/rss/search?hl=en-US&gl=US&ceid=US:en&q="
+_GN_ES = "https://news.google.com/rss/search?hl=es-419&gl=AR&ceid=AR:es-419&q="
+NOTICIAS_FUENTES = [
+    # Global / EE.UU.
+    {"medio": "Reuters", "url": _GN_EN + "site:reuters.com+when:1d"},
+    {"medio": "AP", "url": _GN_EN + "site:apnews.com+when:1d"},
+    {"medio": "CNBC", "url": "https://www.cnbc.com/id/100003114/device/rss/rss.html"},
+    {"medio": "CNBC", "url": "https://www.cnbc.com/id/20910258/device/rss/rss.html"},
+    {"medio": "CNBC", "url": "https://www.cnbc.com/id/100727362/device/rss/rss.html"},
+    {"medio": "MarketWatch", "url": "https://feeds.content.dowjones.io/public/rss/mw_topstories"},
+    {"medio": "Reserva Federal", "url": "https://www.federalreserve.gov/feeds/press_all.xml"},
+    {"medio": "Politico", "url": "https://rss.politico.com/politics-news.xml"},
+    {"medio": "NPR", "url": "https://feeds.npr.org/1004/rss.xml"},
+    # Europa / España
+    {"medio": "BBC", "url": "https://feeds.bbci.co.uk/news/business/rss.xml"},
+    {"medio": "BBC", "url": "https://feeds.bbci.co.uk/news/world/rss.xml"},
+    {"medio": "Financial Times", "url": "https://www.ft.com/rss/home"},
+    {"medio": "BCE", "url": "https://www.ecb.europa.eu/rss/press.html"},
+    {"medio": "El País", "url": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada"},
+    {"medio": "El País", "url": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/internacional/portada"},
+    {"medio": "El País", "url": "https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/espana/portada"},
+    {"medio": "Expansión", "url": "https://e00-expansion.uecdn.es/rss/portada.xml"},
+    {"medio": "Cinco Días", "url": "https://feeds.elpais.com/mrss-s/pages/ep/site/cincodias.elpais.com/portada"},
+    {"medio": "DW", "url": "https://rss.dw.com/rdf/rss-en-world"},
+    {"medio": "Euronews", "url": "https://www.euronews.com/rss?level=theme&name=news"},
+    # Asia / Medio Oriente
+    {"medio": "Nikkei Asia", "url": "https://asia.nikkei.com/rss/feed/nar"},
+    {"medio": "SCMP", "url": "https://www.scmp.com/rss/4/feed"},
+    {"medio": "SCMP", "url": "https://www.scmp.com/rss/92/feed"},
+    {"medio": "CNA", "url": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6936"},
+    {"medio": "CNA", "url": "https://www.channelnewsasia.com/api/v1/rss-outbound-feed?_format=xml&category=6511"},
+    {"medio": "Al Jazeera", "url": "https://www.aljazeera.com/xml/rss/all.xml"},
+    # Argentina
+    {"medio": "Ámbito", "url": "https://www.ambito.com/rss/pages/economia.xml"},
+    {"medio": "Ámbito", "url": "https://www.ambito.com/rss/pages/politica.xml"},
+    {"medio": "Infobae", "url": "https://www.infobae.com/arc/outboundfeeds/rss/category/economia/"},
+    {"medio": "Infobae", "url": "https://www.infobae.com/arc/outboundfeeds/rss/category/politica/"},
+    {"medio": "La Nación", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/category/economia/"},
+    {"medio": "La Nación", "url": "https://www.lanacion.com.ar/arc/outboundfeeds/rss/category/politica/"},
+    {"medio": "El Cronista", "url": _GN_ES + "site:cronista.com+when:1d"},
+    {"medio": "iProfesional", "url": _GN_ES + "site:iprofesional.com+when:1d"},
+]

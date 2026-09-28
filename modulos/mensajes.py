@@ -10,6 +10,8 @@ ticker como link al gráfico. El detalle se pide al bot con /TICKER.
 """
 
 import html
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 EMOJI_DIRECCION = {"alcista": "🟢", "bajista": "🔴", "neutral": "🟡"}
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
@@ -95,6 +97,56 @@ def mensaje_senales(activo, senales, mtf, precio_actual):
     L.append(f"📈 Ver en TradingView: {link_tradingview(activo['tv'])}")
     L.append("No es recomendación. Confirmá en el gráfico.")
     return "\n".join(L)
+
+
+# ═════════════════════════════════════════════════════════════
+# NOTICIAS
+# ═════════════════════════════════════════════════════════════
+BANDERA = {"EE.UU.": "🇺🇸", "Europa": "🇪🇺", "España": "🇪🇸", "Argentina": "🇦🇷", "China": "🇨🇳",
+           "Japón": "🇯🇵", "Asia": "🌏", "Medio Oriente": "🌍", "América Latina": "🌎", "Global": "🌍"}
+
+
+def _hora_local(iso_utc, zona):
+    if not iso_utc:
+        return None
+    return datetime.fromisoformat(iso_utc).astimezone(ZoneInfo(zona)).strftime("%d/%m %H:%M")
+
+
+def mensaje_noticia(a, zona):
+    """
+    Una noticia analizada por la IA: qué está pasando, consecuencias a favor y en contra,
+    por qué te importa, activos afectados, link y fuente. Texto plano.
+    """
+    nota = a["nota"]
+    etiqueta = "🔴 URGENTE · " if a["urgencia"] == "alta" else "📰 "
+    L = [f"{etiqueta}{BANDERA.get(a['region'], '🌍')} {a['region']} · {a['tema']}",
+         a["titulo"], "",
+         f"Qué está pasando: {a['que_pasa']}", "",
+         "Consecuencias:"]
+    L += [f"✅ {x}" for x in a["a_favor"][:3]]
+    L += [f"⚠️ {x}" for x in a["en_contra"][:3]]
+    L += ["", f"Por qué te la mando: {a['por_que']}"]
+    if a["activos"]:
+        L.append("Afecta: " + " · ".join(a["activos"]))
+    L.append(f"🔗 {nota['link']}")
+    hora = _hora_local(nota.get("publicada"), zona)
+    L.append(f"Fuente: {nota['medio']}" + (f" · {hora}" if hora else ""))
+    return "\n".join(L)
+
+
+def otras_noticias(items, limite=3800):
+    """Las noticias que no entran en la tanda completa: una línea con link cada una (HTML)."""
+    cabecera = "📰 <b>Otras noticias relevantes</b> (menos importantes; tocá el título para leerla)\n"
+    mensajes, actual = [], cabecera
+    for x in items:
+        linea = (f"• <a href=\"{html.escape(x['link'], quote=True)}\">{html.escape(x['titulo'])}</a> "
+                 f"({html.escape(x['medio'])})")
+        if len(actual) + len(linea) + 1 > limite:
+            mensajes.append(actual)
+            actual = ""
+        actual += "\n" + linea
+    mensajes.append(actual)
+    return mensajes
 
 
 def item_resumen(activo, senales):
